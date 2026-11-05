@@ -1,0 +1,8 @@
+name = "2020khoda-global-ai-core"
+main = "src/index.js"
+compatibility_date = "2026-11-05"
+
+# READ BEFORE DEPLOY:
+# Configure the D1 binding named DB in the Cloudflare dashboard.
+# Configure the Workers AI binding named AI if Workers AI is intended.
+# Do not add secrets or database IDs to this repository.

@@ -1,0 +1,7 @@
+{
+  "name": "2020khoda-global-ai-core",
+  "version": "0.1.0-candidate",
+  "private": true,
+  "type": "module",
+  "scripts": { "check": "node --check src/index.js", "test": "node tests/worker-smoke.test.mjs" }
+}
