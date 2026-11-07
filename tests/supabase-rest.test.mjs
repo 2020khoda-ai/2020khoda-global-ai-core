@@ -35,7 +35,7 @@ assert.equal(captured.url, "https://project-ref.supabase.co/rest/v1/leads?select
 assert.equal(captured.init.headers.get("apikey"), env.SUPABASE_SERVICE_ROLE_KEY);
 assert.equal(captured.init.headers.get("cache-control"), null);
 assert.equal(captured.init.cache, "no-store");
-assert.throws(
+await assert.rejects(
   () => client.request("unknown_table"),
   /allowlist/
 );
