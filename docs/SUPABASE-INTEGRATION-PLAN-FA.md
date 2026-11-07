@@ -1,37 +1,44 @@
 # طرح اتصال Supabase — 2020KHODA® GLOBAL AI CORE
 
-**وضعیت:** Candidate / آماده بازبینی؛ هنوز به Production متصل یا منتشر نشده است.
+**وضعیت:** Candidate / زیرساخت Supabase اولیه ساخته و از نظر وجود جدول‌ها و فعال بودن RLS تأیید شده؛ اتصال Worker و انتشار Production انجام نشده است.
 
-## یافته‌های قطعی از نسخه فعلی
-- Worker در `src/index.js` برای تمام عملیات پایگاه داده از D1 binding با نام `env.DB` استفاده می‌کند.
-- Worker در نبود D1 با `503 DATABASE_NOT_BOUND` متوقف می‌شود.
-- `wrangler.toml` فقط entry point و compatibility date را دارد؛ bindingهای عملیاتی در آن تعریف نشده‌اند.
-- تست موجود فقط پاسخ امن در نبود D1 را بررسی می‌کند؛ اتصال واقعی دیتابیس، AI، ورود کاربران و CRM را اثبات نمی‌کند.
-- پروژه Supabase در داشبورد Healthy است؛ بررسی SQL قبلی هیچ جدول کسب‌وکاری در schemaهای برنامه نشان نداد و migration ثبت‌شده‌ای نیز گزارش نشده بود.
+## وضعیت تأییدشده Supabase
+در پروژه Supabase، هر ۱۰ جدول زیر ایجاد شده‌اند و RLS برای همه فعال است:
+- profiles
+- leads
+- properties
+- referrals
+- deals
+- conversations
+- messages
+- follow_ups
+- human_approvals
+- audit_events
 
-## Candidate ایجادشده
-Migration اولیه در `supabase/migrations/20261107000100_initial_core.sql` طراحی شده است و جداول پایه را برای:
-- پروفایل کاربران
-- Leads و املاک
-- معرف‌ها و معاملات
-- گفتگوها و پیام‌ها
-- پیگیری‌ها
-- تأیید انسانی
-- Audit events
+این تأیید فقط وجود جدول‌ها و فعال بودن RLS را ثابت می‌کند؛ اتصال Worker، مجوزهای عملیاتی، احراز هویت end-to-end و عملکرد CRM را ثابت نمی‌کند. هیچ policy عمومی anon/authenticated در Migration اولیه تعریف نشده است.
 
-تعریف می‌کند. RLS برای همه جداول فعال است و هیچ policy عمومی برای anon یا authenticated ایجاد نشده است.
+## وضعیت واقعی Worker
+- ورودی Worker: `src/index.js`
+- پایگاه داده فعلی Worker: Cloudflare D1 از طریق `env.DB`
+- در نبود D1، Worker پاسخ `503 DATABASE_NOT_BOUND` می‌دهد.
+- Worker فعلی از جدول‌های D1 دیگری نیز استفاده می‌کند؛ از جمله `users`, `auth_sessions`, `user_memory`, `chat_sessions`, `messages`, `leads`, `sales_pipeline`, `referrals`, `conversions`, `follow_ups`, `guest_sessions`, `guest_messages`, `rate_limits` و `settings`.
+- در Candidate، Migration کامل و سازگار D1 برای این جداول یافت نشد.
+- تست موجود صرفاً پاسخ امن در نبود D1 را بررسی می‌کند؛ آن را نباید تست اتصال یا آمادگی Production تلقی کرد.
 
-## مانع فنی مهم
-این Migration به‌تنهایی Worker فعلی را به Supabase وصل نمی‌کند. Worker فعلی با SQL و binding اختصاصی D1 نوشته شده است؛ Supabase از PostgreSQL و Data API/PostgREST استفاده می‌کند. بنابراین جایگزینی ساده `env.DB` با URL یا کلید Supabase صحیح نیست و می‌تواند داده‌ها یا احراز هویت را خراب کند.
+## مانع یکپارچه‌سازی
+Migration Supabase، ساختار PostgreSQL جداگانه‌ای فراهم می‌کند و معادل schema فعلی D1 نیست. جایگزینی مستقیم `env.DB` با URL یا کلید Supabase صحیح نیست؛ syntax کوئری‌ها، مدل احراز هویت، sessionها، rate limiting و روابط داده باید بازطراحی شوند.
 
-## مراحل باقی‌مانده پیش از انتشار
-1. انتخاب روش اتصال Worker به PostgreSQL: ترجیحاً Supabase Data API از سمت سرور با service-role secret در Cloudflare، یا اتصال PostgreSQL سازگار با محیط Workers.
-2. بازنویسی لایه repository/data-access به‌صورت تدریجی و نگه‌داشتن adapter موقت D1 برای rollback.
-3. نگاشت دقیق queryها و احراز هویت فعلی به Supabase Auth؛ عدم استفاده از service-role در مرورگر.
-4. افزودن تست‌های واقعی با محیط staging جداگانه و داده آزمایشی.
-5. بررسی RLS، مجوزها، rate limiting، CSRF/origin، مدیریت PII و audit trail.
-6. اجرای migration فقط در پروژه staging پس از تأیید انسانی.
-7. Pull Request و گزارش CI؛ سپس تصمیم مستقل برای Production.
+## مسیر اجرایی پیشنهادی
+1. برای Preview مستقل، فقط از D1 غیرProduction با schema کاملاً سازگار استفاده شود؛ اگر چنین D1 موجود نیست، Worker فعلی را Deploy نکنید.
+2. مسیر مهاجرت به Supabase با adapter مستقل و تدریجی برای data-access و auth طراحی شود.
+3. دسترسی Supabase فقط server-side و با Secret مدیریت‌شده در Cloudflare باشد؛ service-role هرگز در مرورگر، GitHub یا فایل‌های عمومی قرار نگیرد.
+4. مدل‌های فعلی users/auth_sessions و سایر جدول‌های D1 با profiles و ساختارهای Supabase نگاشت و سازگاری داده بررسی شود.
+5. پس از تکمیل مهاجرت، Preview مستقل و سپس ارزیابی جداگانه Production انجام شود.
 
-## خط قرمز انتشار
-هیچ migration روی پروژه اصلی، هیچ secret، binding، DNS یا Worker production تغییر داده نشده است. این شاخه فقط پیشنهاد فنی مستقل است.
+## وضعیت تغییرات و انتشار
+- Migration اولیه Supabase در Candidate موجود است و طبق نتیجه SQL Editor، ۱۰ جدول آن ساخته شده و RLS فعال است.
+- هیچ اتصال Worker به Supabase در این Candidate پیاده‌سازی یا تأیید نشده است.
+- هیچ Secret، D1 binding، DNS، دامنه Production یا Worker Production از طریق این تغییرات دست‌کاری نشده است.
+- Candidate مستقل از `main` نگه داشته شده است.
+
+**تصمیم فعلی:** NO-GO برای Production. Preview فقط در صورت وجود D1 غیرProduction با schema سازگار و binding با نام `DB` قابل انجام است.
