@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/index.js && node --check src/lib/supabase-rest.js",
-    "test": "node tests/worker-smoke.test.mjs && node tests/supabase-rest.test.mjs"
+    "check": "node --check src/index.js && node --check src/lib/supabase-rest.js && node --check src/lib/supabase-repository.js",
+    "test": "node tests/worker-smoke.test.mjs && node tests/supabase-rest.test.mjs && node tests/supabase-repository.test.mjs"
   }
 }
