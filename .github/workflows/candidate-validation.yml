@@ -1,0 +1,29 @@
+name: Candidate Validation
+
+on:
+  push:
+    branches:
+      - "candidate/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-and-smoke:
+    name: Syntax and smoke tests (no deployment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check Worker syntax
+        run: npm run check
+      - name: Run isolated smoke test
+        run: npm test
