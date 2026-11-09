@@ -25,5 +25,5 @@ jobs:
           node-version: "20"
       - name: Check Worker syntax
         run: npm run check
-      - name: Run isolated smoke test
+      - name: Run smoke and D1 schema compatibility tests
         run: npm test
