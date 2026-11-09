@@ -29,9 +29,9 @@ The database also contains application tables including `auth_sessions`, `chat_s
 | `messages` | `session_id` nullable; no declared FK; `created_at` DATETIME | `session_id` NOT NULL with FK to `chat_sessions`; `created_at` TEXT | Existing rows and inserts may fail if baseline assumptions are imposed |
 | `chat_sessions` | `owner_id` has no declared FK; timestamps default to unixepoch | FK to `users`; timestamps required | Constraint and insert behavior differs |
 | `auth_sessions` | `created_at` and `last_seen_at` default to unixepoch; FK has no ON DELETE CASCADE | `last_seen_at` nullable; FK uses ON DELETE CASCADE | Lifecycle semantics differ |
-| `conversions` | `lead_id` NOT NULL, `type`, `value` | nullable `lead_id`, `amount`, `currency`, `status`, `notes` | API queries/inserts are not schema-compatible |
-| `referrals` | `referrer_lead_id`, `referred_name`, `referred_phone`, `reward` | `referrer_name`, `referrer_phone`, `lead_id`, `property_code`, `reward_amount`, `currency`, `notes` | Different business model and column names |
-| `follow_ups` | Integer autoincrement `id`; Integer `lead_id`; `type`, `sent_at`, `content`; DATETIME fields | Text `id`; nullable Text `lead_id`; `note`; integer timestamps | Identifier type and workflow semantics conflict |
+| `conversions` | `lead_id` NOT NULL, `type`, `value` | nullable `lead_id`, `amount`, `currency`, `status`, `notes` | Baseline shape differs; current endpoint only reads rows and no write contract is present in source |
+| `referrals` | `referrer_lead_id`, `referred_name`, `referred_phone`, `reward` | `referrer_name`, `referrer_phone`, `lead_id`, `property_code`, `reward_amount`, `currency`, `notes` | Different business model; current endpoint only reads rows and no write contract is present in source |
+| `follow_ups` | Integer autoincrement `id`; Integer `lead_id`; `type`, `sent_at`, `content`; DATETIME fields | Text `id`; nullable Text `lead_id`; `note`; integer timestamps | Identifier type and workflow semantics differ; current endpoint only reads rows |
 | `sales_pipeline` | `probability` INTEGER; includes `expected_close_date` | `probability` REAL; no `expected_close_date` | Type and field mismatch |
 | `leads` | `score` INTEGER; `last_contact` DATETIME; `email` nullable | `score` REAL; `last_contact` INTEGER; includes stricter defaults/constraints | Data type and compatibility assumptions differ |
 | `users` | Includes `updated_at` | Baseline omits `updated_at` | Schema drift |
