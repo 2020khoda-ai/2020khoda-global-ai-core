@@ -59,6 +59,13 @@ The Candidate `src/index.js` was inspected for the live database access paths:
 
 **Interpretation:** the inspected core lead/chat write statements appear column-compatible with the live schema. This is not an end-to-end test and does not prove that runtime behavior, bindings, authorization, data semantics, or all other SQL paths work. The baseline migration is still not an accurate description of the existing database and must not be applied to it.
 
+## Isolated schema fixture
+
+- `tests/fixtures/d1-live-schema.sql` contains a schema-only subset of the inspected live tables; it contains no production rows or secrets.
+- `tests/d1_schema_compatibility.test.py` uses Python's in-memory SQLite database and synthetic values to exercise the current core SQL shapes for users, sessions, messages, leads, pipeline, memory, rate limits, and read-only admin lists.
+- `npm test` now runs the existing unbound-D1 smoke test and this schema fixture test in CI.
+- This fixture is a focused SQL compatibility check, not a Cloudflare D1 emulator or full Worker integration test. It does not test live bindings, Workers AI, auth HTTP flows, concurrent requests, or production data.
+
 ## Required next engineering steps
 
 1. Trace every SQL statement in `src/index.js` for `conversions`, `referrals`, `follow_ups`, `messages`, `sales_pipeline`, `leads`, and `settings`.
