@@ -20,17 +20,17 @@ console.log("PASS: owner identity is server-derived; owner-scoped read/edit/subm
 
 const approvalStart = source.indexOf("async function handleLeadDraftReview(");
 const registrationStart = source.indexOf("async function handleLeadDraftRegister(");
-const adminListStart = source.indexOf("/* -------------------------\\n   ADMIN LEAD LIST", registrationStart);
+const adminListStart = source.indexOf("/* -------------------------\n   ADMIN LEAD LIST", registrationStart);
 assert.ok(approvalStart >= 0 && registrationStart > approvalStart && adminListStart > registrationStart);
 const approvalHandler = source.slice(approvalStart, registrationStart);
 const registrationHandler = source.slice(registrationStart, adminListStart);
 assert.match(approvalHandler, /status = 'APPROVED'/);
-assert.doesNotMatch(approvalHandler, /db\\.batch\\(|INSERT INTO leads|INSERT INTO sales_pipeline/);
-assert.match(registrationHandler, /draft\\.status !== "APPROVED"/);
+assert.doesNotMatch(approvalHandler, /db\.batch\(|INSERT INTO leads|INSERT INTO sales_pipeline/);
+assert.match(registrationHandler, /draft\.status !== "APPROVED"/);
 assert.match(registrationHandler, /reviewed_version/);
-assert.match(registrationHandler, /db\\.batch\\(/);
-assert.match(registrationHandler, /COUNT\\(p\\.id\\) AS pipeline_count/);
-assert.match(source, /\\/register/);
+assert.match(registrationHandler, /db\.batch\(/);
+assert.match(registrationHandler, /COUNT\(p\.id\) AS pipeline_count/);
+assert.match(source, /\/register/);
 assert.match(source, /lead-draft-create:/);
 assert.match(source, /lead-draft-owner:/);
 assert.match(source, /درخواست تأیید شود؟ ثبت در CRM مرحله جداگانه است/);
