@@ -31,6 +31,25 @@ CREATE TABLE user_memory (
  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE rate_limits (ip TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE lead_drafts (
+ id TEXT PRIMARY KEY,
+ lead_id TEXT NOT NULL UNIQUE,
+ name TEXT NOT NULL,
+ phone TEXT NOT NULL,
+ email TEXT,
+ message TEXT DEFAULT '',
+ source TEXT DEFAULT 'website',
+ status TEXT NOT NULL CHECK(status IN ('DRAFT','PENDING_REVIEW','APPROVED','REJECTED','CHANGES_REQUESTED','CRM_REGISTERED','CANCELLED')),
+ version INTEGER NOT NULL DEFAULT 1,
+ reviewed_version INTEGER,
+ idempotency_key TEXT NOT NULL UNIQUE,
+ reviewer_id TEXT,
+ review_note TEXT,
+ created_at INTEGER NOT NULL,
+ updated_at INTEGER NOT NULL,
+ reviewed_at INTEGER,
+ registered_at INTEGER
+);
 CREATE TABLE leads (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT NOT NULL, message TEXT DEFAULT '',
  source TEXT DEFAULT 'landing', status TEXT DEFAULT 'new', ai_score REAL DEFAULT 0,
