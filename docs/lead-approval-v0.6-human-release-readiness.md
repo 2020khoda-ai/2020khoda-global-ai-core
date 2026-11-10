@@ -25,7 +25,8 @@
 - Migration `0002_lead_draft_owner_lifecycle.sql` adds those fields and indexes, and is not applied.
 - Active Worker has a D1 binding named `DB` pointing to the audited database. Secret values are not read or displayed.
 - The repository has no separate static Pages frontend/output directory. The Worker serves the existing HTML UI.
-- Cloudflare Workers Build and Pages Preview integrations have failed on earlier candidate commits. A Pages build command/output cannot safely be invented for a repository with no static frontend bundle.
+- Workers Build failure log for v0.5 explicitly reported a missing `previews` block. This Candidate adds an empty `previews = {}` block; it deliberately does not inherit production D1 or secrets. Runtime Preview therefore remains fail-closed until a dedicated non-production D1 and preview-only secrets are provisioned.
+- The Pages project is a separate integration and is linked to this Worker-only repository despite no static frontend output. Its build command/output cannot safely be invented; Pages integration needs a human decision to disconnect it from this repo or provide an actual frontend artifact.
 
 ## Human release blockers
 1. Review and approve this Candidate branch and all CI checks.
@@ -33,7 +34,7 @@
 3. Run the migration only against the disposable preview D1 and verify legacy rows, schema, and migration ledger.
 4. Replace or supplement shared `ADMIN_TOKEN` with individually attributable Admin identity before customer-facing approval workflows; current audit actor is only `admin_token`.
 5. Decide the Cloudflare hosting topology: this repository is a Worker with HTML served by the Worker, not a Pages static site. Correct the Pages project linkage/build settings in the Cloudflare dashboard only after a real frontend artifact exists.
-6. Inspect Cloudflare Workers Build logs and configure its build/preview/deploy commands. GitHub Actions success is not a Cloudflare deployment.
+6. Re-run Workers Builds on this branch to verify the missing-previews-block error is cleared; then provision a dedicated preview D1 and preview-only secrets before testing authenticated routes. GitHub Actions success is not a Cloudflare deployment.
 7. Run HTTP handler, authentication/authorization, browser, concurrency, and rollback tests against isolated resources.
 8. Human owner verifies domain routing, TLS, D1 binding, AI binding, and smoke tests.
 
