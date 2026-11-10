@@ -5,6 +5,6 @@
   "type": "module",
   "scripts": {
     "check": "node --check src/index.js",
-    "test": "node tests/worker-smoke.test.mjs && python3 tests/d1_schema_compatibility.test.py"
+    "test": "node tests/worker-smoke.test.mjs && node tests/lead-draft-owner-contract.test.mjs && python3 tests/d1_schema_compatibility.test.py && python3 tests/lead-draft-owner-migration.test.py"
   }
 }
