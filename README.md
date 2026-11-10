@@ -9,6 +9,12 @@ This repository contains the supplied Worker source from `020.txt` with only two
 
 The original source was not overwritten. No database schema, authentication logic, password hashing, routes, lead logic, or business rules were intentionally changed.
 
+## Candidate AI configuration
+- Production Worker binding name: `AI` (must match `env.AI.run()` in source).
+- Candidate model: `@cf/google/gemma-4-26b-a4b-it` (multilingual model; runtime inference still requires an isolated test).
+- Preview AI binding is explicit; Preview remains isolated from the production D1 database.
+- This is a source/configuration Candidate only. No Cloudflare setting or active Worker has been changed.
+
 ## Architecture represented
 - Cloudflare Workers module entry point
 - D1 access through `env.DB`
@@ -38,7 +44,7 @@ The smoke test only checks the expected response when D1 is not bound. It does n
 
 ## Known blockers / unverified
 - Exact D1 schema and migrations have not been supplied or verified.
-- Cloudflare bindings, account settings, routes, Access/WAF/rate limiting, and secrets are unknown.
+- Active Cloudflare audit found the current Worker version has no Workers AI binding; the previous AI binding used a name that does not match `env.AI`. Active domain and D1 binding exist. Access/WAF/rate limiting and end-to-end runtime tests remain to be verified.
 - Admin endpoints use `X-Admin-Token`; hardening and platform-level protection need review.
 - Public lead capture has IP rate limiting and basic validation; anti-abuse controls need review.
 - `requestIP()` falls back to `unknown` if `CF-Connecting-IP` is absent; proxy assumptions need verification.

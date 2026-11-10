@@ -9,6 +9,11 @@ binding = "DB"
 database_name = "2020khoda-crm"
 database_id = "25e5ebc9-4809-4028-ab26-349ba359c53f"
 
+# Production Worker AI binding. The application source calls env.AI.run().
+# This Candidate setting is not applied to Cloudflare until an approved release.
+[ai]
+binding = "AI"
+
 # Worker Previews do not inherit production bindings. Keep the Preview isolated:
 # Workers AI is available for preview inference, but production D1 is deliberately
 # NOT bound. DB-backed endpoints must remain unavailable until a separate

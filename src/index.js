@@ -8,7 +8,7 @@ const CONFIG = Object.freeze({
   BRAND: "2020KHODA®",
   VERSION: "3.1.0",
   WHATSAPP: "989170062020",
-  DEFAULT_MODEL: "@cf/meta/llama-3.1-8b-instruct-fp8",
+  DEFAULT_MODEL: "@cf/google/gemma-4-26b-a4b-it",
   MAX_MESSAGE_LENGTH: 8000,
   MAX_HISTORY: 20,
   SESSION_DAYS: 7,
@@ -2484,12 +2484,14 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
 .table-wrap{overflow:auto}
 .muted{color:#aaa;font-size:12px;line-height:1.8}
 #status{color:#e5c879;margin:10px 0}
+.runtime-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.runtime-item{background:#201c14;border:1px solid #39332a;border-radius:10px;padding:12px}.runtime-item small{display:block;color:#aaa}.runtime-item strong{display:block;color:#f1d58b;margin-top:7px;font-size:15px}.runtime-ok{color:#a7d6a0}.runtime-warn{color:#e5c879}.runtime-error{color:#f08b80}
 </style>
 </head>
 <body>
 <div class="wrap">
 <h1>2020KHODA® — GLOBAL CRM</h1>
 <p class="muted">CRM Dashboard · ${CONFIG.VERSION}</p>
+<div class="panel"><h3>وضعیت زنده سرویس</h3><div class="runtime-grid"><div class="runtime-item"><small>Worker / نسخه</small><strong id="runtime-version">در انتظار بررسی</strong></div><div class="runtime-item"><small>اتصال D1</small><strong id="runtime-db">در انتظار بررسی</strong></div><div class="runtime-item"><small>Workers AI</small><strong id="runtime-ai">در انتظار بررسی</strong></div><div class="runtime-item"><small>آخرین بررسی</small><strong id="runtime-updated">—</strong></div></div><p id="runtime-status" class="muted">این بخش فقط وضعیت واقعی endpoint سلامت Worker را می‌خواند؛ هیچ تنظیمی را تغییر نمی‌دهد.</p></div>
 
 <div class="panel">
   <label>Admin Token</label><br><br>
@@ -2528,6 +2530,28 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
 (() => {
   const $ = (id) => document.getElementById(id);
   let token = "";
+
+  async function loadRuntime() {
+    const status = $("runtime-status");
+    try {
+      const response = await fetch("/api/health", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok || data.ok !== true) throw new Error("HTTP " + response.status);
+      $("runtime-version").textContent = String(data.version || "نامشخص");
+      $("runtime-db").textContent = String(data.database || "نامشخص");
+      $("runtime-ai").textContent = String(data.ai || "نامشخص");
+      $("runtime-updated").textContent = new Date(data.timestamp || Date.now()).toLocaleString("fa-IR");
+      status.textContent = "وضعیت از Worker دریافت شد؛ این بررسی معادل تست کامل سامانه نیست.";
+      status.className = "muted runtime-ok";
+    } catch (error) {
+      $("runtime-version").textContent = "نامشخص";
+      $("runtime-db").textContent = "قابل تأیید نیست";
+      $("runtime-ai").textContent = "قابل تأیید نیست";
+      $("runtime-updated").textContent = new Date().toLocaleString("fa-IR");
+      status.textContent = "دریافت وضعیت ناموفق بود: " + String(error.message || error);
+      status.className = "muted runtime-error";
+    }
+  }
 
   async function request(path, options = {}) {
     const response = await fetch(path, {
@@ -2669,6 +2693,9 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
       $("status").textContent = error.message;
     }
   }
+
+  loadRuntime();
+  window.setInterval(loadRuntime, 30000);
 
   $("save").addEventListener("click", () => {
     token = $("token").value.trim();
