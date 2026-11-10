@@ -77,7 +77,7 @@ db.execute("""INSERT INTO lead_drafts
 VALUES ('stale-draft','stale-lead','user','user-test','Stale','+10000000001',
  'APPROVED',2,1,100,100,9999999999)""")
 db.execute("""INSERT OR IGNORE INTO leads
-(id, name, phone, message, source, status, ai_score, score, followup_stage, created_at, updated_at)
+(id, name, phone, email, message, source, status, ai_score, score, followup_stage, created_at, updated_at)
 SELECT lead_id, name, phone, email, message, source, 'new', 0, 0, 0, created_at, ?
 FROM lead_drafts WHERE id='stale-draft' AND status='APPROVED' AND reviewed_version=version""", (now,))
 assert db.execute("SELECT COUNT(*) FROM leads WHERE id='stale-lead'").fetchone()[0] == 0
