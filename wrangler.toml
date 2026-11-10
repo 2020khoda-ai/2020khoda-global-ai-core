@@ -3,11 +3,16 @@ main = "src/index.js"
 compatibility_date = "2026-11-05"
 
 # Production D1 target for the human-approved release.
-# This is Candidate configuration only; no Worker deployment is performed here.
+# Candidate configuration only; no Worker deployment is performed here.
 [[d1_databases]]
 binding = "DB"
 database_name = "2020khoda-crm"
 database_id = "25e5ebc9-4809-4028-ab26-349ba359c53f"
 
-# Do not configure a preview_database_id here: Wrangler local preview must use
-# its isolated local D1 database rather than the live production database.
+# Worker Previews do not inherit production bindings. Keep the Preview isolated:
+# Workers AI is available for preview inference, but production D1 is deliberately
+# NOT bound. DB-backed endpoints must remain unavailable until a separate
+# non-production D1 database is provisioned and explicitly bound here.
+[previews]
+[previews.ai]
+binding = "AI"

@@ -23,22 +23,29 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Validate Wrangler D1 release configuration
+      - name: Validate Wrangler production and Preview isolation
         run: |
           python3 - <<'PY'
+          import json
           import tomllib
           from pathlib import Path
           config = tomllib.loads(Path("wrangler.toml").read_text(encoding="utf-8"))
           bindings = config.get("d1_databases", [])
-          assert len(bindings) == 1, f"expected exactly one D1 binding, got {len(bindings)}"
+          assert len(bindings) == 1, f"expected exactly one production D1 binding, got {len(bindings)}"
           binding = bindings[0]
           assert binding.get("binding") == "DB", "D1 binding must be named DB"
           assert binding.get("database_name") == "2020khoda-crm", "unexpected D1 database name"
           assert binding.get("database_id") == "25e5ebc9-4809-4028-ab26-349ba359c53f", "unexpected D1 database ID"
           assert "preview_database_id" not in binding, "preview must not point at production D1"
-          print("PASS: Wrangler D1 binding matches the audited target; preview is isolated.")
+          previews = config.get("previews")
+          assert isinstance(previews, dict), "Wrangler previews block is required"
+          assert previews.get("ai", {}).get("binding") == "AI", "Preview AI binding must be explicit"
+          assert "d1_databases" not in previews, "Preview must not inherit or bind production D1"
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          assert package.get("devDependencies", {}).get("wrangler") == "4.159.0", "Wrangler must be pinned to tested build version"
+          print("PASS: production D1 target is explicit; Preview AI is configured; Preview D1 is isolated; Wrangler is pinned.")
           PY
       - name: Check Worker syntax
         run: npm run check
-      - name: Run smoke and D1 schema compatibility tests
+      - name: Run smoke, schema, owner lifecycle, and preview configuration tests
         run: npm test
