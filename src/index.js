@@ -1543,7 +1543,7 @@ async function handleLead(request, env) {
         message: alreadyRegistered
           ? "این درخواست قبلاً در CRM ثبت نهایی شده است."
           : "این درخواست قبلاً دریافت شده و وضعیت آن قابل پیگیری است."
-      }, alreadyRegistered ? 200 : 202);
+      }, alreadyRegistered ? 200 : 202, owner.cookie ? { "Set-Cookie": owner.cookie } : {});
     }
 
     try {
@@ -1573,7 +1573,8 @@ async function handleLead(request, env) {
           lead_id: duplicate.lead_id || null,
           idempotent: true,
           message: "این درخواست قبلاً دریافت شده است."
-        }, duplicate.status === "CRM_REGISTERED" ? 200 : 202);
+        }, duplicate.status === "CRM_REGISTERED" ? 200 : 202,
+          owner.cookie ? { "Set-Cookie": owner.cookie } : {});
       }
       throw writeError;
     }
