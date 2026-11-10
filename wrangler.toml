@@ -2,7 +2,12 @@ name = "2020khoda-global-ai-core"
 main = "src/index.js"
 compatibility_date = "2026-11-05"
 
-# READ BEFORE DEPLOY:
-# Configure the D1 binding named DB in the Cloudflare dashboard.
-# Configure the Workers AI binding named AI if Workers AI is intended.
-# Do not add secrets or database IDs to this repository.
+# Production D1 target for the human-approved release.
+# This is Candidate configuration only; no Worker deployment is performed here.
+[[d1_databases]]
+binding = "DB"
+database_name = "2020khoda-crm"
+database_id = "25e5ebc9-4809-4028-ab26-349ba359c53f"
+
+# Do not configure a preview_database_id here: Wrangler local preview must use
+# its isolated local D1 database rather than the live production database.
