@@ -1622,6 +1622,8 @@ async function resolveLeadDraftOwner(request, env) {
 async function handleOwnerLeadDraftCreate(request, env) {
   if (request.method !== "POST") return errorResponse("NOT_FOUND", 404);
   if (!guestOriginAllowed(request)) return errorResponse("FORBIDDEN", 403);
+  const allowed = await rateLimit(env, `lead-draft-create:${requestIP(request)}`, 10);
+  if (!allowed) return errorResponse("RATE_LIMITED", 429);
   const db = requireDB(env);
   const owner = await resolveLeadDraftOwner(request, env);
   const body = await readJSON(request);
@@ -1655,6 +1657,13 @@ async function handleOwnerLeadDraftCreate(request, env) {
 async function handleOwnerLeadDraft(request, env, draftId, action) {
   if (!guestOriginAllowed(request)) return errorResponse("FORBIDDEN", 403);
   if (!validUUID(draftId)) return errorResponse("INVALID_INPUT", 400);
+  const supported =
+    (request.method === "GET" && !action) ||
+    (request.method === "PATCH" && !action) ||
+    (request.method === "POST" && (action === "submit" || action === "cancel"));
+  if (!supported) return errorResponse("NOT_FOUND", 404);
+  const allowed = await rateLimit(env, `lead-draft-owner:${requestIP(request)}`, 60);
+  if (!allowed) return errorResponse("RATE_LIMITED", 429);
   const db = requireDB(env);
   const owner = await resolveLeadDraftOwner(request, env);
   const headers = owner.cookie ? { "Set-Cookie": owner.cookie } : {};
@@ -1745,19 +1754,19 @@ async function handleLeadDrafts(request, env) {
 async function handleLeadDraftReview(request, env, draftId, decision) {
   const denied = adminRequired(request, env);
   if (denied) return denied;
-  if (request.method !== "POST" || !validUUID(draftId)) {
-    return errorResponse("INVALID_INPUT", 400);
-  }
+  if (request.method !== "POST" || !validUUID(draftId)) return errorResponse("INVALID_INPUT", 400);
 
   const db = requireDB(env);
   const draft = await dbFirst(db,
-    "SELECT id, lead_id, status, version, reviewed_version FROM lead_drafts WHERE id = ? LIMIT 1",
+    "SELECT id, status, version, reviewed_version FROM lead_drafts WHERE id = ? LIMIT 1",
     draftId
   );
   if (!draft) return errorResponse("NOT_FOUND", 404);
 
-  if (decision === "approve" && draft.status === "CRM_REGISTERED") {
-    return json({ ok: true, status: "CRM_REGISTERED", lead_id: draft.lead_id, idempotent: true });
+  if (decision === "approve" &&
+      (draft.status === "APPROVED" || draft.status === "CRM_REGISTERED") &&
+      Number(draft.reviewed_version) === Number(draft.version)) {
+    return json({ ok: true, status: draft.status, draft_id: draftId, idempotent: true });
   }
   if (draft.status !== "PENDING_REVIEW") {
     return json({ ok: false, error: "LEAD_DRAFT_NOT_PENDING", status: draft.status }, 409);
@@ -1778,48 +1787,133 @@ async function handleLeadDraftReview(request, env, draftId, decision) {
     const rejected = await dbFirst(db,
       "SELECT status FROM lead_drafts WHERE id = ? LIMIT 1", draftId
     );
-    if (rejected?.status !== "REJECTED") {
-      return json({ ok: false, error: "LEAD_REVIEW_CONFLICT" }, 409);
-    }
+    if (rejected?.status !== "REJECTED") return json({ ok: false, error: "LEAD_REVIEW_CONFLICT" }, 409);
     return json({ ok: true, status: "REJECTED", draft_id: draftId });
   }
 
   if (decision !== "approve") return errorResponse("NOT_FOUND", 404);
 
-  // D1 batch is atomic: approval, CRM lead, pipeline row and final state commit together.
+  // Approval is a distinct state. CRM insertion requires a second explicit Admin action.
+  await dbRun(db,
+    `UPDATE lead_drafts
+     SET status = 'APPROVED', reviewer_id = 'admin_token', review_note = ?,
+         reviewed_at = ?, updated_at = ?, reviewed_version = version
+     WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`,
+    note, now, now, draftId, draft.version
+  );
+  const approved = await dbFirst(db,
+    "SELECT id, status, version, reviewed_version FROM lead_drafts WHERE id = ? LIMIT 1",
+    draftId
+  );
+  if (!approved || approved.status !== "APPROVED" ||
+      Number(approved.reviewed_version) !== Number(approved.version)) {
+    return json({ ok: false, error: "LEAD_REVIEW_CONFLICT" }, 409);
+  }
+  return json({
+    ok: true,
+    status: "APPROVED",
+    draft_id: draftId,
+    message: "درخواست تأیید شد؛ ثبت در CRM به اقدام جداگانه مدیر نیاز دارد."
+  });
+}
+
+async function handleLeadDraftRegister(request, env, draftId) {
+  const denied = adminRequired(request, env);
+  if (denied) return denied;
+  if (request.method !== "POST" || !validUUID(draftId)) return errorResponse("INVALID_INPUT", 400);
+
+  const db = requireDB(env);
+  const draft = await dbFirst(db,
+    `SELECT id, lead_id, name, phone, email, message, source, status,
+            version, reviewed_version, expires_at, created_at
+     FROM lead_drafts WHERE id = ? LIMIT 1`,
+    draftId
+  );
+  if (!draft) return errorResponse("NOT_FOUND", 404);
+
+  if (draft.status === "CRM_REGISTERED") {
+    const verified = await dbFirst(db,
+      `SELECT d.status, l.name AS lead_name, l.phone AS lead_phone,
+              COUNT(p.id) AS pipeline_count
+       FROM lead_drafts d
+       JOIN leads l ON l.id = d.lead_id
+       LEFT JOIN sales_pipeline p ON p.lead_id = d.lead_id
+       WHERE d.id = ?
+       GROUP BY d.id, l.id`,
+      draftId
+    );
+    if (verified && verified.lead_name === draft.name &&
+        verified.lead_phone === draft.phone && Number(verified.pipeline_count) === 1) {
+      return json({ ok: true, status: "CRM_REGISTERED", draft_id: draftId,
+        lead_id: draft.lead_id, idempotent: true });
+    }
+    return json({ ok: false, error: "LEAD_REGISTRATION_INTEGRITY_FAILED" }, 409);
+  }
+
+  if (draft.status !== "APPROVED" ||
+      Number(draft.reviewed_version) !== Number(draft.version)) {
+    return json({ ok: false, error: "LEAD_DRAFT_NOT_APPROVED" }, 409);
+  }
+  const now = nowSeconds();
+  if (Number(draft.expires_at || 0) > 0 && Number(draft.expires_at) <= now) {
+    return json({ ok: false, error: "LEAD_DRAFT_EXPIRED" }, 410);
+  }
+
+  // D1 batch executes these statements atomically and in order.
+  // CRM_REGISTERED is written only if the stored Lead matches the approved draft
+  // and exactly one Pipeline row exists for that Lead.
   await db.batch([
-    db.prepare(`UPDATE lead_drafts
-      SET status = 'APPROVED', reviewer_id = 'admin_token', review_note = ?,
-          reviewed_at = ?, updated_at = ?, reviewed_version = version
-      WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`)
-      .bind(note, now, now, draftId, draft.version),
     db.prepare(`INSERT OR IGNORE INTO leads
       (id, name, phone, email, message, source, status, ai_score, score,
        followup_stage, created_at, updated_at)
       SELECT lead_id, name, phone, email, message, source, 'new', 0, 0,
              0, created_at, ?
       FROM lead_drafts
-      WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version`)
-      .bind(now, draftId),
-    db.prepare(`INSERT OR IGNORE INTO sales_pipeline
+      WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version
+        AND (expires_at IS NULL OR expires_at = 0 OR expires_at > ?)`)
+      .bind(now, draftId, now),
+    db.prepare(`INSERT INTO sales_pipeline
       (id, lead_id, stage, deal_value, currency, probability, notes, created_at, updated_at)
       SELECT ?, d.lead_id, 'new', 0, 'USD', 0, '', ?, ?
-      FROM lead_drafts d JOIN leads l ON l.id = d.lead_id
-      WHERE d.id = ? AND d.status = 'APPROVED' AND d.reviewed_version = d.version`)
+      FROM lead_drafts d
+      JOIN leads l ON l.id = d.lead_id
+      WHERE d.id = ? AND d.status = 'APPROVED' AND d.reviewed_version = d.version
+        AND l.name = d.name AND l.phone = d.phone
+        AND COALESCE(l.email, '') = COALESCE(d.email, '')
+        AND COALESCE(l.message, '') = COALESCE(d.message, '')
+        AND COALESCE(l.source, '') = COALESCE(d.source, '')
+        AND NOT EXISTS (SELECT 1 FROM sales_pipeline p WHERE p.lead_id = d.lead_id)`)
       .bind(makeId(), now, now, draftId),
     db.prepare(`UPDATE lead_drafts
       SET status = 'CRM_REGISTERED', registered_at = ?, updated_at = ?
       WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version
-        AND EXISTS (SELECT 1 FROM leads WHERE leads.id = lead_drafts.lead_id)
-        AND EXISTS (SELECT 1 FROM sales_pipeline WHERE sales_pipeline.lead_id = lead_drafts.lead_id)`)
-      .bind(now, now, draftId)
+        AND (expires_at IS NULL OR expires_at = 0 OR expires_at > ?)
+        AND EXISTS (
+          SELECT 1 FROM leads l
+          WHERE l.id = lead_drafts.lead_id
+            AND l.name = lead_drafts.name AND l.phone = lead_drafts.phone
+            AND COALESCE(l.email, '') = COALESCE(lead_drafts.email, '')
+            AND COALESCE(l.message, '') = COALESCE(lead_drafts.message, '')
+            AND COALESCE(l.source, '') = COALESCE(lead_drafts.source, '')
+        )
+        AND (SELECT COUNT(*) FROM sales_pipeline p WHERE p.lead_id = lead_drafts.lead_id) = 1`)
+      .bind(now, now, draftId, now)
   ]);
 
   const completed = await dbFirst(db,
-    "SELECT id, lead_id, status FROM lead_drafts WHERE id = ? LIMIT 1", draftId
+    `SELECT d.id, d.lead_id, d.status, l.name AS lead_name, l.phone AS lead_phone,
+            COUNT(p.id) AS pipeline_count
+     FROM lead_drafts d
+     LEFT JOIN leads l ON l.id = d.lead_id
+     LEFT JOIN sales_pipeline p ON p.lead_id = d.lead_id
+     WHERE d.id = ?
+     GROUP BY d.id, l.id`,
+    draftId
   );
-  if (!completed || completed.status !== "CRM_REGISTERED") {
-    return json({ ok: false, error: "LEAD_APPROVAL_REGISTRATION_FAILED" }, 409);
+  if (!completed || completed.status !== "CRM_REGISTERED" ||
+      completed.lead_name !== draft.name || completed.lead_phone !== draft.phone ||
+      Number(completed.pipeline_count) !== 1) {
+    return json({ ok: false, error: "LEAD_REGISTRATION_VERIFICATION_FAILED" }, 409);
   }
   return json({ ok: true, status: "CRM_REGISTERED", draft_id: draftId, lead_id: completed.lead_id });
 }
@@ -2516,7 +2610,7 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
   <h3>درخواست‌های منتظر بررسی</h3>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>نام</th><th>تلفن</th><th>منبع</th><th>تاریخ</th><th>اقدام</th></tr></thead>
+      <thead><tr><th>نام</th><th>تلفن</th><th>منبع</th><th>تاریخ</th><th>وضعیت</th><th>اقدام</th></tr></thead>
       <tbody id="drafts"></tbody>
     </table>
   </div>
@@ -2569,7 +2663,7 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
       const entered = window.prompt("دلیل رد درخواست (اختیاری):", "");
       if (entered === null) return;
       note = entered;
-    } else if (!window.confirm("درخواست تأیید و در CRM ثبت شود؟")) {
+    } else if (!window.confirm("درخواست تأیید شود؟ ثبت در CRM مرحله جداگانه است.")) {
       return;
     }
 
@@ -2578,6 +2672,20 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
       await request("/api/lead-drafts/" + encodeURIComponent(draftId) + "/" + decision, {
         method: "POST",
         body: JSON.stringify({ note })
+      });
+      await load();
+    } catch (error) {
+      $("status").textContent = error.message;
+    }
+  }
+
+  async function registerDraft(draftId) {
+    if (!window.confirm("اطلاعات تأییدشده بررسی شده است. اکنون در CRM ثبت شود؟")) return;
+    $("status").textContent = "در حال ثبت نهایی در CRM...";
+    try {
+      await request("/api/lead-drafts/" + encodeURIComponent(draftId) + "/register", {
+        method: "POST",
+        body: JSON.stringify({})
       });
       await load();
     } catch (error) {
@@ -2594,10 +2702,11 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     $("status").textContent = "در حال دریافت اطلاعات...";
 
     try {
-      const [statsData, leadsData, draftsData] = await Promise.all([
+      const [statsData, leadsData, pendingDraftsData, approvedDraftsData] = await Promise.all([
         request("/api/stats"),
         request("/api/leads?limit=100"),
-        request("/api/lead-drafts?status=PENDING_REVIEW")
+        request("/api/lead-drafts?status=PENDING_REVIEW"),
+        request("/api/lead-drafts?status=APPROVED")
       ]);
 
       const stats = statsData.stats || {};
@@ -2642,24 +2751,36 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
 
       const draftsBody = $("drafts");
       draftsBody.replaceChildren();
-      for (const draft of (draftsData.drafts || [])) {
+      const drafts = [
+        ...(pendingDraftsData.drafts || []),
+        ...(approvedDraftsData.drafts || [])
+      ];
+      for (const draft of drafts) {
         const tr = document.createElement("tr");
-        for (const value of [draft.name, draft.phone, draft.source, draft.created_at]) {
+        for (const value of [draft.name, draft.phone, draft.source, draft.created_at, draft.status]) {
           const td = document.createElement("td");
           td.textContent = value == null ? "" : String(value);
           tr.appendChild(td);
         }
         const actions = document.createElement("td");
-        const approve = document.createElement("button");
-        approve.type = "button";
-        approve.textContent = "تأیید و ثبت در CRM";
-        approve.addEventListener("click", () => reviewDraft(draft.id, "approve"));
-        const reject = document.createElement("button");
-        reject.type = "button";
-        reject.textContent = "رد درخواست";
-        reject.style.marginInlineStart = "8px";
-        reject.addEventListener("click", () => reviewDraft(draft.id, "reject"));
-        actions.append(approve, reject);
+        if (draft.status === "PENDING_REVIEW") {
+          const approve = document.createElement("button");
+          approve.type = "button";
+          approve.textContent = "تأیید بررسی";
+          approve.addEventListener("click", () => reviewDraft(draft.id, "approve"));
+          const reject = document.createElement("button");
+          reject.type = "button";
+          reject.textContent = "رد درخواست";
+          reject.style.marginInlineStart = "8px";
+          reject.addEventListener("click", () => reviewDraft(draft.id, "reject"));
+          actions.append(approve, reject);
+        } else if (draft.status === "APPROVED") {
+          const register = document.createElement("button");
+          register.type = "button";
+          register.textContent = "ثبت در CRM";
+          register.addEventListener("click", () => registerDraft(draft.id));
+          actions.append(register);
+        }
         tr.appendChild(actions);
         draftsBody.appendChild(tr);
       }
@@ -2860,9 +2981,12 @@ if (
       (ownerDraftMatch[2] || "").toLowerCase() || null);
   }
 
-  const leadDraftReviewMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})\/(approve|reject)$/i);
+  const leadDraftReviewMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})\/(approve|reject|register)$/i);
   if (leadDraftReviewMatch) {
-    return handleLeadDraftReview(request, env, leadDraftReviewMatch[1], leadDraftReviewMatch[2].toLowerCase());
+    const draftId = leadDraftReviewMatch[1];
+    const action = leadDraftReviewMatch[2].toLowerCase();
+    if (action === "register") return handleLeadDraftRegister(request, env, draftId);
+    return handleLeadDraftReview(request, env, draftId, action);
   }
 
   if (path === "/api/leads") {

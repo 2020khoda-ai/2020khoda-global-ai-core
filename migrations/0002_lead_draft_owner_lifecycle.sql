@@ -11,3 +11,9 @@ CREATE INDEX IF NOT EXISTS idx_lead_drafts_owner_v05
 
 CREATE INDEX IF NOT EXISTS idx_lead_drafts_review_v05
   ON lead_drafts(status, submitted_at);
+
+-- Enforce the one-pipeline-row-per-lead invariant. Live D1 audit found
+-- 15 pipeline rows for 15 distinct leads and no duplicate lead_id values.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_pipeline_lead_unique
+  ON sales_pipeline(lead_id);
+
