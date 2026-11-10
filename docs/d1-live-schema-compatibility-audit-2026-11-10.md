@@ -9,11 +9,12 @@
 
 ## Runtime binding recheck — 2026-11-10
 
-- The current deployed Worker `2020khoda-global-ai-core` is version 139 at 100% traffic.
-- Its current script settings expose secrets `ADMIN_TOKEN`, `OPENAI_API_KEY`, and `TELEGRAM_BOT_TOKEN`, but no D1 binding named `DB`.
-- The Candidate `wrangler.toml` contains no `[[d1_databases]]` entry; it only instructs operators to configure a `DB` binding in the Cloudflare dashboard.
-- Candidate source calls `requireDB(env)` and requires `env.DB`; therefore the active Worker configuration and application runtime contract are not aligned.
-- This audit did not change the Worker, binding, database, secrets, DNS, or deployment. A separate, explicit approval is required before any Cloudflare configuration change.
+- The latest deployed Worker is version 140 at 100% traffic (deployment `456d6740-6bee-471d-acb0-87f62c6bd8f6`). Its version metadata currently reports no bindings.
+- The Worker source requires `env.DB` through `requireDB(env)`. The live D1 database `2020khoda-crm` exists and contains `lead_drafts`, but the active Worker version metadata does not prove a `DB` binding is attached.
+- Candidate `wrangler.toml` has now been updated to declare `[[d1_databases]]` with binding `DB`, database name `2020khoda-crm`, and the verified database ID `25e5ebc9-4809-4028-ab26-349ba359c53f`. This is a Candidate-only file change; it has not been deployed.
+- The Candidate configuration intentionally omits `preview_database_id` so local preview does not target the live production database.
+- The current Cloudflare script-settings endpoint reports no bindings in its returned metadata; the version endpoint likewise returned an empty bindings list. Verify the effective binding after the human-triggered deployment before enabling customer traffic.
+- No Worker, D1, secrets, DNS, route, or Production deployment was changed during this Candidate update.
 
 ## Observed live data
 
