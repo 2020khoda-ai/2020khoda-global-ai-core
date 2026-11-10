@@ -1,0 +1,10 @@
+name = "2020khoda-global-ai-core-candidate-local"
+main = "src/index.js"
+compatibility_date = "2026-11-05"
+
+# Local Candidate only. This config intentionally has NO D1 binding.
+# It cannot connect to the Production database through Wrangler config.
+# Workers AI is a remote binding and may incur usage charges when invoked.
+[ai]
+binding = "AI"
+remote = true
