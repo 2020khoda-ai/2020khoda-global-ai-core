@@ -2,10 +2,18 @@
 
 ## Scope and safety
 
-- Target: Cloudflare D1 database `2020khoda-crm-db`.
+- Target: Cloudflare D1 database `2020khoda-crm` (`25e5ebc9-4809-4028-ab26-349ba359c53f`). The separate database `2020khoda-crm-db` has a different, legacy schema and does not contain `lead_drafts`.
 - Method: read-only inspection of `sqlite_master`, `PRAGMA table_info`, row counts, migration ledger, and `PRAGMA foreign_key_check`.
 - No SQL writes, migrations, DDL, data exports, binding changes, Worker changes, or deployments were performed.
 - This document is evidence for a separate Candidate review. It is not approval to apply a migration.
+
+## Runtime binding recheck — 2026-11-10
+
+- The current deployed Worker `2020khoda-global-ai-core` is version 139 at 100% traffic.
+- Its current script settings expose secrets `ADMIN_TOKEN`, `OPENAI_API_KEY`, and `TELEGRAM_BOT_TOKEN`, but no D1 binding named `DB`.
+- The Candidate `wrangler.toml` contains no `[[d1_databases]]` entry; it only instructs operators to configure a `DB` binding in the Cloudflare dashboard.
+- Candidate source calls `requireDB(env)` and requires `env.DB`; therefore the active Worker configuration and application runtime contract are not aligned.
+- This audit did not change the Worker, binding, database, secrets, DNS, or deployment. A separate, explicit approval is required before any Cloudflare configuration change.
 
 ## Observed live data
 
@@ -61,7 +69,7 @@ The Candidate `src/index.js` was inspected for the live database access paths:
 
 ## Isolated schema fixture
 
-- `tests/fixtures/d1-live-schema.sql` contains a schema-only subset of the inspected live tables; it contains no production rows or secrets.
+- `tests/fixtures/d1-live-schema.sql` contains a schema-only subset of the inspected live tables; it contains no production rows or secrets. The `lead_drafts` definition has been aligned in the Candidate with the live nullable `idempotency_key`, `expires_at`, defaults, and status default.
 - `tests/d1_schema_compatibility.test.py` uses Python's in-memory SQLite database and synthetic values to exercise the current core SQL shapes for users, sessions, messages, leads, pipeline, memory, rate limits, and read-only admin lists.
 - `npm test` now runs the existing unbound-D1 smoke test and this schema fixture test in CI.
 - This fixture is a focused SQL compatibility check, not a Cloudflare D1 emulator or full Worker integration test. It does not test live bindings, Workers AI, auth HTTP flows, concurrent requests, or production data.
