@@ -11,3 +11,9 @@ database_id = "25e5ebc9-4809-4028-ab26-349ba359c53f"
 
 # Do not configure a preview_database_id here: Wrangler local preview must use
 # its isolated local D1 database rather than the live production database.
+
+# Worker Preview configuration is intentionally isolated from Production.
+# No D1 or secrets are inherited; previews remain fail-closed until a dedicated
+# non-production D1 binding and preview-only secrets are configured.
+previews = { }
+
