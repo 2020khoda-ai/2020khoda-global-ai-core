@@ -8,7 +8,7 @@ const CONFIG = Object.freeze({
   BRAND: "2020KHODA®",
   VERSION: "3.1.0",
   WHATSAPP: "989170062020",
-  DEFAULT_MODEL: "@cf/meta/llama-3.1-8b-instruct-fp8",
+  DEFAULT_MODEL: "@cf/google/gemma-4-26b-a4b-it",
   MAX_MESSAGE_LENGTH: 8000,
   MAX_HISTORY: 20,
   SESSION_DAYS: 7,
