@@ -1631,7 +1631,7 @@ async function handleOwnerLeadDraftCreate(request, env) {
   const message = cleanText(body.message, 3000);
   const source = cleanText(body.source || "website", 80);
   const headers = owner.cookie ? { "Set-Cookie": owner.cookie } : {};
-  if (!name || !phone || !/^[+0-9()\\-\\s]{7,25}$/.test(phone) ||
+  if (!name || !phone || !/^[+0-9()\-\s]{7,25}$/.test(phone) ||
       (email && !validEmail(email))) {
     return json({ ok: false, error: "INVALID_INPUT" }, 400, headers);
   }
@@ -1677,7 +1677,7 @@ async function handleOwnerLeadDraft(request, env, draftId, action) {
     const email = body.email === undefined ? (draft.email || "") : normalizeEmail(body.email);
     const message = body.message === undefined ? draft.message : cleanText(body.message, 3000);
     const source = body.source === undefined ? draft.source : cleanText(body.source, 80);
-    if (!name || !phone || !/^[+0-9()\\-\\s]{7,25}$/.test(phone) || (email && !validEmail(email))) {
+    if (!name || !phone || !/^[+0-9()\-\s]{7,25}$/.test(phone) || (email && !validEmail(email))) {
       return json({ ok: false, error: "INVALID_INPUT" }, 400, headers);
     }
     await dbRun(db, `UPDATE lead_drafts
@@ -2854,7 +2854,7 @@ if (
     return handleLeadDrafts(request, env);
   }
 
-  const ownerDraftMatch = path.match(/^\\/api\\/lead-drafts\\/([0-9a-f-]{36})(?:\\/(submit|cancel))?$/i);
+  const ownerDraftMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})(?:\/(submit|cancel))?$/i);
   if (ownerDraftMatch) {
     return handleOwnerLeadDraft(request, env, ownerDraftMatch[1],
       (ownerDraftMatch[2] || "").toLowerCase() || null);
