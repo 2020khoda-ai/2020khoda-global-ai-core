@@ -1508,25 +1508,200 @@ async function handleLead(request, env) {
   }
 
   try {
-    const lead = await createLead(env, {
-      name,
-      phone,
-      email,
-      message,
-      source: body.source || "website"
-    });
+    const db = requireDB(env);
+    const draftId = makeId();
+    const leadId = makeId();
+    const now = nowSeconds();
+    const source = cleanText(body.source || "website", 80);
+    // Stable per-day fallback makes retries safe even when older clients omit a key.
+    const suppliedKey = cleanText(
+      request.headers.get("Idempotency-Key") || body.idempotency_key || "",
+      120
+    );
+    const idempotencyKey = suppliedKey || (await sha256(JSON.stringify({
+      name, phone, email, message, source, day: Math.floor(Date.now() / 86400000)
+    }))).slice(0, 64);
+
+    const existing = await dbFirst(
+      db,
+      "SELECT id, lead_id, status FROM lead_drafts WHERE idempotency_key = ? LIMIT 1",
+      idempotencyKey
+    );
+
+    if (existing) {
+      const alreadyRegistered = existing.status === "CRM_REGISTERED";
+      return json({
+        ok: true,
+        status: existing.status,
+        draft_id: existing.id,
+        lead_id: existing.lead_id || null,
+        idempotent: true,
+        message: alreadyRegistered
+          ? "این درخواست قبلاً در CRM ثبت نهایی شده است."
+          : "این درخواست قبلاً دریافت شده و وضعیت آن قابل پیگیری است."
+      }, alreadyRegistered ? 200 : 202);
+    }
+
+    try {
+      await db.batch([
+        db.prepare(`INSERT INTO lead_drafts
+          (id, lead_id, name, phone, email, message, source, status,
+           version, idempotency_key, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?)`)
+          .bind(draftId, leadId, name, phone, email || null, message, source,
+            idempotencyKey, now, now),
+        db.prepare(`UPDATE lead_drafts
+          SET status = 'PENDING_REVIEW', updated_at = ?
+          WHERE id = ? AND status = 'DRAFT' AND version = 1`)
+          .bind(now, draftId)
+      ]);
+    } catch (writeError) {
+      const duplicate = await dbFirst(
+        db,
+        "SELECT id, lead_id, status FROM lead_drafts WHERE idempotency_key = ? LIMIT 1",
+        idempotencyKey
+      );
+      if (duplicate) {
+        return json({
+          ok: true,
+          status: duplicate.status,
+          draft_id: duplicate.id,
+          lead_id: duplicate.lead_id || null,
+          idempotent: true,
+          message: "این درخواست قبلاً دریافت شده است."
+        }, duplicate.status === "CRM_REGISTERED" ? 200 : 202);
+      }
+      throw writeError;
+    }
+
+    const saved = await dbFirst(
+      db,
+      "SELECT id, status FROM lead_drafts WHERE id = ? LIMIT 1",
+      draftId
+    );
+    if (!saved || saved.status !== "PENDING_REVIEW") {
+      throw new Error("LEAD_DRAFT_SUBMISSION_FAILED");
+    }
 
     return json({
-      ok: true,      message: "اطلاعات شما با موفقیت ثبت شد.",
-      lead_id: lead.id
-    }, 201);
+      ok: true,
+      status: "PENDING_REVIEW",
+      draft_id: draftId,
+      message: "درخواست شما دریافت شد و پس از بررسی مدیر ثبت نهایی می‌شود."
+    }, 202);
   } catch (error) {
+    console.error("LEAD_DRAFT_SAVE_FAILED", {
+      message: cleanText(error?.message || "UNKNOWN", 160)
+    });
     return json({
       ok: false,
-      error: "LEAD_SAVE_FAILED",
-      message: "ثبت اطلاعات انجام نشد."
+      error: "LEAD_DRAFT_SAVE_FAILED",
+      message: "دریافت درخواست انجام نشد."
     }, 500);
   }
+}
+
+async function handleLeadDrafts(request, env) {
+  const denied = adminRequired(request, env);
+  if (denied) return denied;
+  if (request.method !== "GET") return errorResponse("NOT_FOUND", 404);
+
+  const db = requireDB(env);
+  const url = new URL(request.url);
+  const status = cleanText(url.searchParams.get("status") || "PENDING_REVIEW", 40);
+  const allowedStatuses = ["DRAFT", "PENDING_REVIEW", "APPROVED", "REJECTED", "CHANGES_REQUESTED", "CRM_REGISTERED", "CANCELLED"];
+  if (!allowedStatuses.includes(status)) return errorResponse("INVALID_INPUT", 400);
+
+  const drafts = await dbAll(db,
+    `SELECT id, lead_id, name, phone, email, message, source, status,
+            version, reviewed_version, review_note, created_at, updated_at,
+            reviewed_at, registered_at
+     FROM lead_drafts WHERE status = ? ORDER BY created_at ASC LIMIT 200`,
+    status
+  );
+  return json({ ok: true, total_returned: drafts.length, drafts });
+}
+
+async function handleLeadDraftReview(request, env, draftId, decision) {
+  const denied = adminRequired(request, env);
+  if (denied) return denied;
+  if (request.method !== "POST" || !validUUID(draftId)) {
+    return errorResponse("INVALID_INPUT", 400);
+  }
+
+  const db = requireDB(env);
+  const draft = await dbFirst(db,
+    "SELECT id, lead_id, status, version, reviewed_version FROM lead_drafts WHERE id = ? LIMIT 1",
+    draftId
+  );
+  if (!draft) return errorResponse("NOT_FOUND", 404);
+
+  if (decision === "approve" && draft.status === "CRM_REGISTERED") {
+    return json({ ok: true, status: "CRM_REGISTERED", lead_id: draft.lead_id, idempotent: true });
+  }
+  if (draft.status !== "PENDING_REVIEW") {
+    return json({ ok: false, error: "LEAD_DRAFT_NOT_PENDING", status: draft.status }, 409);
+  }
+
+  const body = await readJSON(request);
+  const note = cleanText(body.note || "", 1000);
+  const now = nowSeconds();
+
+  if (decision === "reject") {
+    await dbRun(db,
+      `UPDATE lead_drafts
+       SET status = 'REJECTED', reviewer_id = 'shared_admin_token', review_note = ?,
+           reviewed_at = ?, updated_at = ?, reviewed_version = version
+       WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`,
+      note, now, now, draftId, draft.version
+    );
+    const rejected = await dbFirst(db,
+      "SELECT status FROM lead_drafts WHERE id = ? LIMIT 1", draftId
+    );
+    if (rejected?.status !== "REJECTED") {
+      return json({ ok: false, error: "LEAD_REVIEW_CONFLICT" }, 409);
+    }
+    return json({ ok: true, status: "REJECTED", draft_id: draftId });
+  }
+
+  if (decision !== "approve") return errorResponse("NOT_FOUND", 404);
+
+  // D1 batch is atomic: approval, CRM lead, pipeline row and final state commit together.
+  await db.batch([
+    db.prepare(`UPDATE lead_drafts
+      SET status = 'APPROVED', reviewer_id = 'shared_admin_token', review_note = ?,
+          reviewed_at = ?, updated_at = ?, reviewed_version = version
+      WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`)
+      .bind(note, now, now, draftId, draft.version),
+    db.prepare(`INSERT OR IGNORE INTO leads
+      (id, name, phone, email, message, source, status, ai_score, score,
+       followup_stage, created_at, updated_at)
+      SELECT lead_id, name, phone, email, message, source, 'new', 0, 0,
+             0, created_at, ?
+      FROM lead_drafts
+      WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version`)
+      .bind(now, draftId),
+    db.prepare(`INSERT OR IGNORE INTO sales_pipeline
+      (id, lead_id, stage, deal_value, currency, probability, notes, created_at, updated_at)
+      SELECT ?, d.lead_id, 'new', 0, 'USD', 0, '', ?, ?
+      FROM lead_drafts d JOIN leads l ON l.id = d.lead_id
+      WHERE d.id = ? AND d.status = 'APPROVED' AND d.reviewed_version = d.version`)
+      .bind(makeId(), now, now, draftId),
+    db.prepare(`UPDATE lead_drafts
+      SET status = 'CRM_REGISTERED', registered_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version
+        AND EXISTS (SELECT 1 FROM leads WHERE leads.id = lead_drafts.lead_id)
+        AND EXISTS (SELECT 1 FROM sales_pipeline WHERE sales_pipeline.lead_id = lead_drafts.lead_id)`)
+      .bind(now, now, draftId)
+  ]);
+
+  const completed = await dbFirst(db,
+    "SELECT id, lead_id, status FROM lead_drafts WHERE id = ? LIMIT 1", draftId
+  );
+  if (!completed || completed.status !== "CRM_REGISTERED") {
+    return json({ ok: false, error: "LEAD_APPROVAL_REGISTRATION_FAILED" }, 409);
+  }
+  return json({ ok: true, status: "CRM_REGISTERED", draft_id: draftId, lead_id: completed.lead_id });
 }
 
 /* -------------------------
@@ -2216,6 +2391,17 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     </table>
   </div>
 </div>
+
+<div class="panel">
+  <h3>درخواست‌های منتظر بررسی</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>نام</th><th>تلفن</th><th>منبع</th><th>تاریخ</th><th>اقدام</th></tr></thead>
+      <tbody id="drafts"></tbody>
+    </table>
+  </div>
+  <p class="muted">ثبت در CRM فقط پس از تأیید مدیر انجام می‌شود.</p>
+</div>
 </div>
 
 <script>
@@ -2223,9 +2409,14 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
   const $ = (id) => document.getElementById(id);
   let token = "";
 
-  async function request(path) {
+  async function request(path, options = {}) {
     const response = await fetch(path, {
-      headers: { "X-Admin-Token": token },
+      ...options,
+      headers: {
+        "X-Admin-Token": token,
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      },
       cache: "no-store"
     });
 
@@ -2252,6 +2443,28 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     return box;
   }
 
+  async function reviewDraft(draftId, decision) {
+    let note = "";
+    if (decision === "reject") {
+      const entered = window.prompt("دلیل رد درخواست (اختیاری):", "");
+      if (entered === null) return;
+      note = entered;
+    } else if (!window.confirm("درخواست تأیید و در CRM ثبت شود؟")) {
+      return;
+    }
+
+    $("status").textContent = "در حال ثبت تصمیم...";
+    try {
+      await request("/api/lead-drafts/" + encodeURIComponent(draftId) + "/" + decision, {
+        method: "POST",
+        body: JSON.stringify({ note })
+      });
+      await load();
+    } catch (error) {
+      $("status").textContent = error.message;
+    }
+  }
+
   async function load() {
     if (!token) {
       $("status").textContent = "ابتدا توکن مدیریت را وارد کنید.";
@@ -2261,9 +2474,10 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     $("status").textContent = "در حال دریافت اطلاعات...";
 
     try {
-      const [statsData, leadsData] = await Promise.all([
+      const [statsData, leadsData, draftsData] = await Promise.all([
         request("/api/stats"),
-        request("/api/leads?limit=100")
+        request("/api/leads?limit=100"),
+        request("/api/lead-drafts?status=PENDING_REVIEW")
       ]);
 
       const stats = statsData.stats || {};
@@ -2304,6 +2518,30 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
         }
 
         body.appendChild(tr);
+      }
+
+      const draftsBody = $("drafts");
+      draftsBody.replaceChildren();
+      for (const draft of (draftsData.drafts || [])) {
+        const tr = document.createElement("tr");
+        for (const value of [draft.name, draft.phone, draft.source, draft.created_at]) {
+          const td = document.createElement("td");
+          td.textContent = value == null ? "" : String(value);
+          tr.appendChild(td);
+        }
+        const actions = document.createElement("td");
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.textContent = "تأیید و ثبت در CRM";
+        approve.addEventListener("click", () => reviewDraft(draft.id, "approve"));
+        const reject = document.createElement("button");
+        reject.type = "button";
+        reject.textContent = "رد درخواست";
+        reject.style.marginInlineStart = "8px";
+        reject.addEventListener("click", () => reviewDraft(draft.id, "reject"));
+        actions.append(approve, reject);
+        tr.appendChild(actions);
+        draftsBody.appendChild(tr);
       }
 
       $("status").textContent = "اطلاعات با موفقیت دریافت شد.";
@@ -2486,6 +2724,15 @@ if (
 
   if (path === "/api/lead") {
     return handleLead(request, env);
+  }
+
+  if (path === "/api/lead-drafts") {
+    return handleLeadDrafts(request, env);
+  }
+
+  const leadDraftReviewMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})\/(approve|reject)$/i);
+  if (leadDraftReviewMatch) {
+    return handleLeadDraftReview(request, env, leadDraftReviewMatch[1], leadDraftReviewMatch[2].toLowerCase());
   }
 
   if (path === "/api/leads") {
