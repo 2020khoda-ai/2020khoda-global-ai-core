@@ -2455,7 +2455,7 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
 
     $("status").textContent = "در حال ثبت تصمیم...";
     try {
-      await request(`/api/lead-drafts/${encodeURIComponent(draftId)}/${decision}`, {
+      await request(`/api/lead-drafts/\${encodeURIComponent(draftId)}/\${decision}`, {
         method: "POST",
         body: JSON.stringify({ note })
       });
