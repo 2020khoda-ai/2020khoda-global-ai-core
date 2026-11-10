@@ -60,6 +60,15 @@ assert db.execute("SELECT status FROM lead_drafts WHERE id=?", (draft_id,)).fetc
 assert db.execute("SELECT COUNT(*) FROM leads WHERE id=?", (lead_id,)).fetchone()[0] == 1
 assert db.execute("SELECT COUNT(*) FROM sales_pipeline WHERE lead_id=?", (lead_id,)).fetchone()[0] == 1
 
+# The migration adds a durable uniqueness guard for one pipeline row per lead.
+try:
+    db.execute("""INSERT INTO sales_pipeline
+    (id, lead_id, stage, deal_value, currency, probability, notes, created_at, updated_at)
+    VALUES ('duplicate-pipeline','lead-release-test','new',0,'USD',0,'',103,103)""")
+    raise AssertionError("duplicate Pipeline row should be rejected by the unique index")
+except sqlite3.IntegrityError:
+    pass
+
 # A repeated registration cannot create a second pipeline row.
 db.execute("""INSERT INTO sales_pipeline
 (id, lead_id, stage, deal_value, currency, probability, notes, created_at, updated_at)
