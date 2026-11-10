@@ -39,16 +39,18 @@ CREATE TABLE lead_drafts (
  email TEXT,
  message TEXT DEFAULT '',
  source TEXT DEFAULT 'website',
- status TEXT NOT NULL CHECK(status IN ('DRAFT','PENDING_REVIEW','APPROVED','REJECTED','CHANGES_REQUESTED','CRM_REGISTERED','CANCELLED')),
+ status TEXT NOT NULL DEFAULT 'DRAFT'
+   CHECK(status IN ('DRAFT','PENDING_REVIEW','APPROVED','REJECTED','CHANGES_REQUESTED','CRM_REGISTERED','CANCELLED')),
  version INTEGER NOT NULL DEFAULT 1,
  reviewed_version INTEGER,
- idempotency_key TEXT NOT NULL UNIQUE,
+ idempotency_key TEXT UNIQUE,
  reviewer_id TEXT,
- review_note TEXT,
- created_at INTEGER NOT NULL,
- updated_at INTEGER NOT NULL,
+ review_note TEXT DEFAULT '',
+ created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+ updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
  reviewed_at INTEGER,
- registered_at INTEGER
+ registered_at INTEGER,
+ expires_at INTEGER
 );
 CREATE TABLE leads (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT NOT NULL, message TEXT DEFAULT '',
