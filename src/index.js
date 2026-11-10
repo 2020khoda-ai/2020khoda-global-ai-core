@@ -1509,6 +1509,7 @@ async function handleLead(request, env) {
 
   try {
     const db = requireDB(env);
+    const owner = await resolveLeadDraftOwner(request, env);
     const draftId = makeId();
     const leadId = makeId();
     const now = nowSeconds();
@@ -1518,9 +1519,12 @@ async function handleLead(request, env) {
       request.headers.get("Idempotency-Key") || body.idempotency_key || "",
       120
     );
-    const idempotencyKey = suppliedKey || (await sha256(JSON.stringify({
-      name, phone, email, message, source, day: Math.floor(Date.now() / 86400000)
-    }))).slice(0, 64);
+    const idempotencyKey = await sha256(JSON.stringify({
+      owner_type: owner.owner_type,
+      owner_id: owner.owner_id,
+      supplied_key: suppliedKey || null,
+      payload: suppliedKey ? null : { name, phone, email, message, source, day: Math.floor(Date.now() / 86400000) }
+    })).then(value => value.slice(0, 64));
 
     const existing = await dbFirst(
       db,
@@ -1545,15 +1549,15 @@ async function handleLead(request, env) {
     try {
       await db.batch([
         db.prepare(`INSERT INTO lead_drafts
-          (id, lead_id, name, phone, email, message, source, status,
-           version, idempotency_key, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?)`)
-          .bind(draftId, leadId, name, phone, email || null, message, source,
-            idempotencyKey, now, now),
+          (id, lead_id, owner_type, owner_id, chat_id, name, phone, email, message, source, status,
+           version, idempotency_key, created_at, updated_at, expires_at)
+          VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?, ?)`)
+          .bind(draftId, leadId, owner.owner_type, owner.owner_id, name, phone, email || null, message, source,
+            idempotencyKey, now, now, now + 30 * 86400),
         db.prepare(`UPDATE lead_drafts
-          SET status = 'PENDING_REVIEW', updated_at = ?
-          WHERE id = ? AND status = 'DRAFT' AND version = 1`)
-          .bind(now, draftId)
+          SET status = 'PENDING_REVIEW', submitted_at = ?, updated_at = ?
+          WHERE id = ? AND owner_type = ? AND owner_id = ? AND status = 'DRAFT' AND version = 1`)
+          .bind(now, now, draftId, owner.owner_type, owner.owner_id)
       ]);
     } catch (writeError) {
       const duplicate = await dbFirst(
@@ -1576,8 +1580,8 @@ async function handleLead(request, env) {
 
     const saved = await dbFirst(
       db,
-      "SELECT id, status FROM lead_drafts WHERE id = ? LIMIT 1",
-      draftId
+      "SELECT id, status FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ? LIMIT 1",
+      draftId, owner.owner_type, owner.owner_id
     );
     if (!saved || saved.status !== "PENDING_REVIEW") {
       throw new Error("LEAD_DRAFT_SUBMISSION_FAILED");
@@ -1588,7 +1592,7 @@ async function handleLead(request, env) {
       status: "PENDING_REVIEW",
       draft_id: draftId,
       message: "درخواست شما دریافت شد و پس از بررسی مدیر ثبت نهایی می‌شود."
-    }, 202);
+    }, 202, owner.cookie ? { "Set-Cookie": owner.cookie } : {});
   } catch (error) {
     console.error("LEAD_DRAFT_SAVE_FAILED", {
       message: cleanText(error?.message || "UNKNOWN", 160)
