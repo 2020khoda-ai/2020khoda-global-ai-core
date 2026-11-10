@@ -1601,6 +1601,121 @@ async function handleLead(request, env) {
   }
 }
 
+
+/* -------------------------
+   OWNER-BOUND LEAD DRAFT LIFECYCLE
+   Owner identity is derived only from a verified session/cookie.
+------------------------- */
+async function resolveLeadDraftOwner(request, env) {
+  const user = await authGetUser(request, env);
+  if (user) return { owner_type: "user", owner_id: user.id, cookie: null };
+  const guest = await getOrCreateGuest(request, env);
+  return { owner_type: "guest", owner_id: guest.id,
+    cookie: guest.token ? guestCookie(guest.token) : null };
+}
+
+async function handleOwnerLeadDraftCreate(request, env) {
+  if (request.method !== "POST") return errorResponse("NOT_FOUND", 404);
+  if (!guestOriginAllowed(request)) return errorResponse("FORBIDDEN", 403);
+  const db = requireDB(env);
+  const owner = await resolveLeadDraftOwner(request, env);
+  const body = await readJSON(request);
+  const name = cleanText(body.name, 120);
+  const phone = cleanText(body.phone, 40);
+  const email = normalizeEmail(body.email);
+  const message = cleanText(body.message, 3000);
+  const source = cleanText(body.source || "website", 80);
+  const headers = owner.cookie ? { "Set-Cookie": owner.cookie } : {};
+  if (!name || !phone || !/^[+0-9()\\-\\s]{7,25}$/.test(phone) ||
+      (email && !validEmail(email))) {
+    return json({ ok: false, error: "INVALID_INPUT" }, 400, headers);
+  }
+  const now = nowSeconds(), id = makeId(), leadId = makeId();
+  const expiresAt = now + 30 * 86400;
+  await dbRun(db, `INSERT INTO lead_drafts
+    (id, lead_id, owner_type, owner_id, chat_id, name, phone, email, message,
+     source, status, version, created_at, updated_at, expires_at)
+    VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?)`,
+    id, leadId, owner.owner_type, owner.owner_id, name, phone, email || null,
+    message, source, now, now, expiresAt);
+  const saved = await dbFirst(db,
+    "SELECT id, status, version, expires_at FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+    id, owner.owner_type, owner.owner_id);
+  if (!saved || saved.status !== "DRAFT") {
+    return json({ ok: false, error: "LEAD_DRAFT_SAVE_FAILED" }, 500, headers);
+  }
+  return json({ ok: true, draft: saved }, 201, headers);
+}
+
+async function handleOwnerLeadDraft(request, env, draftId, action) {
+  if (!guestOriginAllowed(request)) return errorResponse("FORBIDDEN", 403);
+  if (!validUUID(draftId)) return errorResponse("INVALID_INPUT", 400);
+  const db = requireDB(env);
+  const owner = await resolveLeadDraftOwner(request, env);
+  const headers = owner.cookie ? { "Set-Cookie": owner.cookie } : {};
+  const draft = await dbFirst(db,
+    `SELECT id, name, phone, email, message, source, status, version, expires_at, updated_at
+     FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ? LIMIT 1`,
+    draftId, owner.owner_type, owner.owner_id);
+  if (!draft) return errorResponse("NOT_FOUND", 404);
+  if (Number(draft.expires_at || 0) > 0 && Number(draft.expires_at) <= nowSeconds()) {
+    return json({ ok: false, error: "LEAD_DRAFT_EXPIRED" }, 410, headers);
+  }
+  if (request.method === "GET" && !action) {
+    return json({ ok: true, draft }, 200, headers);
+  }
+  if (request.method === "PATCH" && !action) {
+    if (draft.status !== "DRAFT") return json({ ok: false, error: "LEAD_DRAFT_NOT_EDITABLE" }, 409, headers);
+    const body = await readJSON(request);
+    const name = body.name === undefined ? draft.name : cleanText(body.name, 120);
+    const phone = body.phone === undefined ? draft.phone : cleanText(body.phone, 40);
+    const email = body.email === undefined ? (draft.email || "") : normalizeEmail(body.email);
+    const message = body.message === undefined ? draft.message : cleanText(body.message, 3000);
+    const source = body.source === undefined ? draft.source : cleanText(body.source, 80);
+    if (!name || !phone || !/^[+0-9()\\-\\s]{7,25}$/.test(phone) || (email && !validEmail(email))) {
+      return json({ ok: false, error: "INVALID_INPUT" }, 400, headers);
+    }
+    await dbRun(db, `UPDATE lead_drafts
+      SET name = ?, phone = ?, email = ?, message = ?, source = ?,
+          version = version + 1, reviewed_version = NULL, reviewer_id = NULL,
+          review_note = '', reviewed_at = NULL, updated_at = ?
+      WHERE id = ? AND owner_type = ? AND owner_id = ? AND status = 'DRAFT' AND version = ?`,
+      name, phone, email || null, message, source, nowSeconds(),
+      draftId, owner.owner_type, owner.owner_id, draft.version);
+    const updated = await dbFirst(db,
+      "SELECT id, status, version, updated_at FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+      draftId, owner.owner_type, owner.owner_id);
+    if (!updated || Number(updated.version) !== Number(draft.version) + 1) {
+      return json({ ok: false, error: "LEAD_DRAFT_CONFLICT" }, 409, headers);
+    }
+    return json({ ok: true, draft: updated }, 200, headers);
+  }
+  if (request.method === "POST" && action === "submit") {
+    await dbRun(db, `UPDATE lead_drafts SET status = 'PENDING_REVIEW', submitted_at = ?, updated_at = ?
+      WHERE id = ? AND owner_type = ? AND owner_id = ? AND status = 'DRAFT' AND version = ?`,
+      nowSeconds(), nowSeconds(), draftId, owner.owner_type, owner.owner_id, draft.version);
+    const submitted = await dbFirst(db,
+      "SELECT status, version FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+      draftId, owner.owner_type, owner.owner_id);
+    if (!submitted || submitted.status !== "PENDING_REVIEW" || Number(submitted.version) !== Number(draft.version)) {
+      return json({ ok: false, error: "LEAD_DRAFT_CONFLICT" }, 409, headers);
+    }
+    return json({ ok: true, status: "PENDING_REVIEW", draft_id: draftId }, 202, headers);
+  }
+  if (request.method === "POST" && action === "cancel") {
+    await dbRun(db, `UPDATE lead_drafts SET status = 'CANCELLED', updated_at = ?
+      WHERE id = ? AND owner_type = ? AND owner_id = ?
+        AND status IN ('DRAFT','PENDING_REVIEW') AND version = ?`,
+      nowSeconds(), draftId, owner.owner_type, owner.owner_id, draft.version);
+    const cancelled = await dbFirst(db,
+      "SELECT status FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+      draftId, owner.owner_type, owner.owner_id);
+    if (cancelled?.status !== "CANCELLED") return json({ ok: false, error: "LEAD_DRAFT_CONFLICT" }, 409, headers);
+    return json({ ok: true, status: "CANCELLED", draft_id: draftId }, 200, headers);
+  }
+  return errorResponse("NOT_FOUND", 404);
+}
+
 async function handleLeadDrafts(request, env) {
   const denied = adminRequired(request, env);
   if (denied) return denied;
@@ -1650,7 +1765,7 @@ async function handleLeadDraftReview(request, env, draftId, decision) {
   if (decision === "reject") {
     await dbRun(db,
       `UPDATE lead_drafts
-       SET status = 'REJECTED', reviewer_id = 'shared_admin_token', review_note = ?,
+       SET status = 'REJECTED', reviewer_id = 'admin_token', review_note = ?,
            reviewed_at = ?, updated_at = ?, reviewed_version = version
        WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`,
       note, now, now, draftId, draft.version
@@ -1669,7 +1784,7 @@ async function handleLeadDraftReview(request, env, draftId, decision) {
   // D1 batch is atomic: approval, CRM lead, pipeline row and final state commit together.
   await db.batch([
     db.prepare(`UPDATE lead_drafts
-      SET status = 'APPROVED', reviewer_id = 'shared_admin_token', review_note = ?,
+      SET status = 'APPROVED', reviewer_id = 'admin_token', review_note = ?,
           reviewed_at = ?, updated_at = ?, reviewed_version = version
       WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`)
       .bind(note, now, now, draftId, draft.version),
@@ -2726,8 +2841,18 @@ if (
     return handleLead(request, env);
   }
 
+  if (path === "/api/lead-drafts" && method === "POST") {
+    return handleOwnerLeadDraftCreate(request, env);
+  }
+
   if (path === "/api/lead-drafts") {
     return handleLeadDrafts(request, env);
+  }
+
+  const ownerDraftMatch = path.match(/^\\/api\\/lead-drafts\\/([0-9a-f-]{36})(?:\\/(submit|cancel))?$/i);
+  if (ownerDraftMatch) {
+    return handleOwnerLeadDraft(request, env, ownerDraftMatch[1],
+      (ownerDraftMatch[2] || "").toLowerCase() || null);
   }
 
   const leadDraftReviewMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})\/(approve|reject)$/i);
