@@ -1509,6 +1509,7 @@ async function handleLead(request, env) {
 
   try {
     const db = requireDB(env);
+    const owner = await resolveLeadDraftOwner(request, env);
     const draftId = makeId();
     const leadId = makeId();
     const now = nowSeconds();
@@ -1518,9 +1519,12 @@ async function handleLead(request, env) {
       request.headers.get("Idempotency-Key") || body.idempotency_key || "",
       120
     );
-    const idempotencyKey = suppliedKey || (await sha256(JSON.stringify({
-      name, phone, email, message, source, day: Math.floor(Date.now() / 86400000)
-    }))).slice(0, 64);
+    const idempotencyKey = await sha256(JSON.stringify({
+      owner_type: owner.owner_type,
+      owner_id: owner.owner_id,
+      supplied_key: suppliedKey || null,
+      payload: suppliedKey ? null : { name, phone, email, message, source, day: Math.floor(Date.now() / 86400000) }
+    })).then(value => value.slice(0, 64));
 
     const existing = await dbFirst(
       db,
@@ -1539,21 +1543,21 @@ async function handleLead(request, env) {
         message: alreadyRegistered
           ? "این درخواست قبلاً در CRM ثبت نهایی شده است."
           : "این درخواست قبلاً دریافت شده و وضعیت آن قابل پیگیری است."
-      }, alreadyRegistered ? 200 : 202);
+      }, alreadyRegistered ? 200 : 202, owner.cookie ? { "Set-Cookie": owner.cookie } : {});
     }
 
     try {
       await db.batch([
         db.prepare(`INSERT INTO lead_drafts
-          (id, lead_id, name, phone, email, message, source, status,
-           version, idempotency_key, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?)`)
-          .bind(draftId, leadId, name, phone, email || null, message, source,
-            idempotencyKey, now, now),
+          (id, lead_id, owner_type, owner_id, chat_id, name, phone, email, message, source, status,
+           version, idempotency_key, created_at, updated_at, expires_at)
+          VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?, ?)`)
+          .bind(draftId, leadId, owner.owner_type, owner.owner_id, name, phone, email || null, message, source,
+            idempotencyKey, now, now, now + 30 * 86400),
         db.prepare(`UPDATE lead_drafts
-          SET status = 'PENDING_REVIEW', updated_at = ?
-          WHERE id = ? AND status = 'DRAFT' AND version = 1`)
-          .bind(now, draftId)
+          SET status = 'PENDING_REVIEW', submitted_at = ?, updated_at = ?
+          WHERE id = ? AND owner_type = ? AND owner_id = ? AND status = 'DRAFT' AND version = 1`)
+          .bind(now, now, draftId, owner.owner_type, owner.owner_id)
       ]);
     } catch (writeError) {
       const duplicate = await dbFirst(
@@ -1569,15 +1573,16 @@ async function handleLead(request, env) {
           lead_id: duplicate.lead_id || null,
           idempotent: true,
           message: "این درخواست قبلاً دریافت شده است."
-        }, duplicate.status === "CRM_REGISTERED" ? 200 : 202);
+        }, duplicate.status === "CRM_REGISTERED" ? 200 : 202,
+          owner.cookie ? { "Set-Cookie": owner.cookie } : {});
       }
       throw writeError;
     }
 
     const saved = await dbFirst(
       db,
-      "SELECT id, status FROM lead_drafts WHERE id = ? LIMIT 1",
-      draftId
+      "SELECT id, status FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ? LIMIT 1",
+      draftId, owner.owner_type, owner.owner_id
     );
     if (!saved || saved.status !== "PENDING_REVIEW") {
       throw new Error("LEAD_DRAFT_SUBMISSION_FAILED");
@@ -1588,7 +1593,7 @@ async function handleLead(request, env) {
       status: "PENDING_REVIEW",
       draft_id: draftId,
       message: "درخواست شما دریافت شد و پس از بررسی مدیر ثبت نهایی می‌شود."
-    }, 202);
+    }, 202, owner.cookie ? { "Set-Cookie": owner.cookie } : {});
   } catch (error) {
     console.error("LEAD_DRAFT_SAVE_FAILED", {
       message: cleanText(error?.message || "UNKNOWN", 160)
@@ -1599,6 +1604,130 @@ async function handleLead(request, env) {
       message: "دریافت درخواست انجام نشد."
     }, 500);
   }
+}
+
+
+/* -------------------------
+   OWNER-BOUND LEAD DRAFT LIFECYCLE
+   Owner identity is derived only from a verified session/cookie.
+------------------------- */
+async function resolveLeadDraftOwner(request, env) {
+  const user = await authGetUser(request, env);
+  if (user) return { owner_type: "user", owner_id: user.id, cookie: null };
+  const guest = await getOrCreateGuest(request, env);
+  return { owner_type: "guest", owner_id: guest.id,
+    cookie: guest.token ? guestCookie(guest.token) : null };
+}
+
+async function handleOwnerLeadDraftCreate(request, env) {
+  if (request.method !== "POST") return errorResponse("NOT_FOUND", 404);
+  if (!guestOriginAllowed(request)) return errorResponse("FORBIDDEN", 403);
+  const allowed = await rateLimit(env, `lead-draft-create:${requestIP(request)}`, 10);
+  if (!allowed) return errorResponse("RATE_LIMITED", 429);
+  const db = requireDB(env);
+  const owner = await resolveLeadDraftOwner(request, env);
+  const body = await readJSON(request);
+  const name = cleanText(body.name, 120);
+  const phone = cleanText(body.phone, 40);
+  const email = normalizeEmail(body.email);
+  const message = cleanText(body.message, 3000);
+  const source = cleanText(body.source || "website", 80);
+  const headers = owner.cookie ? { "Set-Cookie": owner.cookie } : {};
+  if (!name || !phone || !/^[+0-9()\-\s]{7,25}$/.test(phone) ||
+      (email && !validEmail(email))) {
+    return json({ ok: false, error: "INVALID_INPUT" }, 400, headers);
+  }
+  const now = nowSeconds(), id = makeId(), leadId = makeId();
+  const expiresAt = now + 30 * 86400;
+  await dbRun(db, `INSERT INTO lead_drafts
+    (id, lead_id, owner_type, owner_id, chat_id, name, phone, email, message,
+     source, status, version, created_at, updated_at, expires_at)
+    VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?)`,
+    id, leadId, owner.owner_type, owner.owner_id, name, phone, email || null,
+    message, source, now, now, expiresAt);
+  const saved = await dbFirst(db,
+    "SELECT id, status, version, expires_at FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+    id, owner.owner_type, owner.owner_id);
+  if (!saved || saved.status !== "DRAFT") {
+    return json({ ok: false, error: "LEAD_DRAFT_SAVE_FAILED" }, 500, headers);
+  }
+  return json({ ok: true, draft: saved }, 201, headers);
+}
+
+async function handleOwnerLeadDraft(request, env, draftId, action) {
+  if (!guestOriginAllowed(request)) return errorResponse("FORBIDDEN", 403);
+  if (!validUUID(draftId)) return errorResponse("INVALID_INPUT", 400);
+  const supported =
+    (request.method === "GET" && !action) ||
+    (request.method === "PATCH" && !action) ||
+    (request.method === "POST" && (action === "submit" || action === "cancel"));
+  if (!supported) return errorResponse("NOT_FOUND", 404);
+  const allowed = await rateLimit(env, `lead-draft-owner:${requestIP(request)}`, 60);
+  if (!allowed) return errorResponse("RATE_LIMITED", 429);
+  const db = requireDB(env);
+  const owner = await resolveLeadDraftOwner(request, env);
+  const headers = owner.cookie ? { "Set-Cookie": owner.cookie } : {};
+  const draft = await dbFirst(db,
+    `SELECT id, name, phone, email, message, source, status, version, expires_at, updated_at
+     FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ? LIMIT 1`,
+    draftId, owner.owner_type, owner.owner_id);
+  if (!draft) return errorResponse("NOT_FOUND", 404);
+  if (Number(draft.expires_at || 0) > 0 && Number(draft.expires_at) <= nowSeconds()) {
+    return json({ ok: false, error: "LEAD_DRAFT_EXPIRED" }, 410, headers);
+  }
+  if (request.method === "GET" && !action) {
+    return json({ ok: true, draft }, 200, headers);
+  }
+  if (request.method === "PATCH" && !action) {
+    if (draft.status !== "DRAFT") return json({ ok: false, error: "LEAD_DRAFT_NOT_EDITABLE" }, 409, headers);
+    const body = await readJSON(request);
+    const name = body.name === undefined ? draft.name : cleanText(body.name, 120);
+    const phone = body.phone === undefined ? draft.phone : cleanText(body.phone, 40);
+    const email = body.email === undefined ? (draft.email || "") : normalizeEmail(body.email);
+    const message = body.message === undefined ? draft.message : cleanText(body.message, 3000);
+    const source = body.source === undefined ? draft.source : cleanText(body.source, 80);
+    if (!name || !phone || !/^[+0-9()\-\s]{7,25}$/.test(phone) || (email && !validEmail(email))) {
+      return json({ ok: false, error: "INVALID_INPUT" }, 400, headers);
+    }
+    await dbRun(db, `UPDATE lead_drafts
+      SET name = ?, phone = ?, email = ?, message = ?, source = ?,
+          version = version + 1, reviewed_version = NULL, reviewer_id = NULL,
+          review_note = '', reviewed_at = NULL, updated_at = ?
+      WHERE id = ? AND owner_type = ? AND owner_id = ? AND status = 'DRAFT' AND version = ?`,
+      name, phone, email || null, message, source, nowSeconds(),
+      draftId, owner.owner_type, owner.owner_id, draft.version);
+    const updated = await dbFirst(db,
+      "SELECT id, status, version, updated_at FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+      draftId, owner.owner_type, owner.owner_id);
+    if (!updated || Number(updated.version) !== Number(draft.version) + 1) {
+      return json({ ok: false, error: "LEAD_DRAFT_CONFLICT" }, 409, headers);
+    }
+    return json({ ok: true, draft: updated }, 200, headers);
+  }
+  if (request.method === "POST" && action === "submit") {
+    await dbRun(db, `UPDATE lead_drafts SET status = 'PENDING_REVIEW', submitted_at = ?, updated_at = ?
+      WHERE id = ? AND owner_type = ? AND owner_id = ? AND status = 'DRAFT' AND version = ?`,
+      nowSeconds(), nowSeconds(), draftId, owner.owner_type, owner.owner_id, draft.version);
+    const submitted = await dbFirst(db,
+      "SELECT status, version FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+      draftId, owner.owner_type, owner.owner_id);
+    if (!submitted || submitted.status !== "PENDING_REVIEW" || Number(submitted.version) !== Number(draft.version)) {
+      return json({ ok: false, error: "LEAD_DRAFT_CONFLICT" }, 409, headers);
+    }
+    return json({ ok: true, status: "PENDING_REVIEW", draft_id: draftId }, 202, headers);
+  }
+  if (request.method === "POST" && action === "cancel") {
+    await dbRun(db, `UPDATE lead_drafts SET status = 'CANCELLED', updated_at = ?
+      WHERE id = ? AND owner_type = ? AND owner_id = ?
+        AND status IN ('DRAFT','PENDING_REVIEW') AND version = ?`,
+      nowSeconds(), draftId, owner.owner_type, owner.owner_id, draft.version);
+    const cancelled = await dbFirst(db,
+      "SELECT status FROM lead_drafts WHERE id = ? AND owner_type = ? AND owner_id = ?",
+      draftId, owner.owner_type, owner.owner_id);
+    if (cancelled?.status !== "CANCELLED") return json({ ok: false, error: "LEAD_DRAFT_CONFLICT" }, 409, headers);
+    return json({ ok: true, status: "CANCELLED", draft_id: draftId }, 200, headers);
+  }
+  return errorResponse("NOT_FOUND", 404);
 }
 
 async function handleLeadDrafts(request, env) {
@@ -1625,19 +1754,19 @@ async function handleLeadDrafts(request, env) {
 async function handleLeadDraftReview(request, env, draftId, decision) {
   const denied = adminRequired(request, env);
   if (denied) return denied;
-  if (request.method !== "POST" || !validUUID(draftId)) {
-    return errorResponse("INVALID_INPUT", 400);
-  }
+  if (request.method !== "POST" || !validUUID(draftId)) return errorResponse("INVALID_INPUT", 400);
 
   const db = requireDB(env);
   const draft = await dbFirst(db,
-    "SELECT id, lead_id, status, version, reviewed_version FROM lead_drafts WHERE id = ? LIMIT 1",
+    "SELECT id, status, version, reviewed_version FROM lead_drafts WHERE id = ? LIMIT 1",
     draftId
   );
   if (!draft) return errorResponse("NOT_FOUND", 404);
 
-  if (decision === "approve" && draft.status === "CRM_REGISTERED") {
-    return json({ ok: true, status: "CRM_REGISTERED", lead_id: draft.lead_id, idempotent: true });
+  if (decision === "approve" &&
+      (draft.status === "APPROVED" || draft.status === "CRM_REGISTERED") &&
+      Number(draft.reviewed_version) === Number(draft.version)) {
+    return json({ ok: true, status: draft.status, draft_id: draftId, idempotent: true });
   }
   if (draft.status !== "PENDING_REVIEW") {
     return json({ ok: false, error: "LEAD_DRAFT_NOT_PENDING", status: draft.status }, 409);
@@ -1650,7 +1779,7 @@ async function handleLeadDraftReview(request, env, draftId, decision) {
   if (decision === "reject") {
     await dbRun(db,
       `UPDATE lead_drafts
-       SET status = 'REJECTED', reviewer_id = 'shared_admin_token', review_note = ?,
+       SET status = 'REJECTED', reviewer_id = 'admin_token', review_note = ?,
            reviewed_at = ?, updated_at = ?, reviewed_version = version
        WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`,
       note, now, now, draftId, draft.version
@@ -1658,48 +1787,133 @@ async function handleLeadDraftReview(request, env, draftId, decision) {
     const rejected = await dbFirst(db,
       "SELECT status FROM lead_drafts WHERE id = ? LIMIT 1", draftId
     );
-    if (rejected?.status !== "REJECTED") {
-      return json({ ok: false, error: "LEAD_REVIEW_CONFLICT" }, 409);
-    }
+    if (rejected?.status !== "REJECTED") return json({ ok: false, error: "LEAD_REVIEW_CONFLICT" }, 409);
     return json({ ok: true, status: "REJECTED", draft_id: draftId });
   }
 
   if (decision !== "approve") return errorResponse("NOT_FOUND", 404);
 
-  // D1 batch is atomic: approval, CRM lead, pipeline row and final state commit together.
+  // Approval is a distinct state. CRM insertion requires a second explicit Admin action.
+  await dbRun(db,
+    `UPDATE lead_drafts
+     SET status = 'APPROVED', reviewer_id = 'admin_token', review_note = ?,
+         reviewed_at = ?, updated_at = ?, reviewed_version = version
+     WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`,
+    note, now, now, draftId, draft.version
+  );
+  const approved = await dbFirst(db,
+    "SELECT id, status, version, reviewed_version FROM lead_drafts WHERE id = ? LIMIT 1",
+    draftId
+  );
+  if (!approved || approved.status !== "APPROVED" ||
+      Number(approved.reviewed_version) !== Number(approved.version)) {
+    return json({ ok: false, error: "LEAD_REVIEW_CONFLICT" }, 409);
+  }
+  return json({
+    ok: true,
+    status: "APPROVED",
+    draft_id: draftId,
+    message: "درخواست تأیید شد؛ ثبت در CRM به اقدام جداگانه مدیر نیاز دارد."
+  });
+}
+
+async function handleLeadDraftRegister(request, env, draftId) {
+  const denied = adminRequired(request, env);
+  if (denied) return denied;
+  if (request.method !== "POST" || !validUUID(draftId)) return errorResponse("INVALID_INPUT", 400);
+
+  const db = requireDB(env);
+  const draft = await dbFirst(db,
+    `SELECT id, lead_id, name, phone, email, message, source, status,
+            version, reviewed_version, expires_at, created_at
+     FROM lead_drafts WHERE id = ? LIMIT 1`,
+    draftId
+  );
+  if (!draft) return errorResponse("NOT_FOUND", 404);
+
+  if (draft.status === "CRM_REGISTERED") {
+    const verified = await dbFirst(db,
+      `SELECT d.status, l.name AS lead_name, l.phone AS lead_phone,
+              COUNT(p.id) AS pipeline_count
+       FROM lead_drafts d
+       JOIN leads l ON l.id = d.lead_id
+       LEFT JOIN sales_pipeline p ON p.lead_id = d.lead_id
+       WHERE d.id = ?
+       GROUP BY d.id, l.id`,
+      draftId
+    );
+    if (verified && verified.lead_name === draft.name &&
+        verified.lead_phone === draft.phone && Number(verified.pipeline_count) === 1) {
+      return json({ ok: true, status: "CRM_REGISTERED", draft_id: draftId,
+        lead_id: draft.lead_id, idempotent: true });
+    }
+    return json({ ok: false, error: "LEAD_REGISTRATION_INTEGRITY_FAILED" }, 409);
+  }
+
+  if (draft.status !== "APPROVED" ||
+      Number(draft.reviewed_version) !== Number(draft.version)) {
+    return json({ ok: false, error: "LEAD_DRAFT_NOT_APPROVED" }, 409);
+  }
+  const now = nowSeconds();
+  if (Number(draft.expires_at || 0) > 0 && Number(draft.expires_at) <= now) {
+    return json({ ok: false, error: "LEAD_DRAFT_EXPIRED" }, 410);
+  }
+
+  // D1 batch executes these statements atomically and in order.
+  // CRM_REGISTERED is written only if the stored Lead matches the approved draft
+  // and exactly one Pipeline row exists for that Lead.
   await db.batch([
-    db.prepare(`UPDATE lead_drafts
-      SET status = 'APPROVED', reviewer_id = 'shared_admin_token', review_note = ?,
-          reviewed_at = ?, updated_at = ?, reviewed_version = version
-      WHERE id = ? AND status = 'PENDING_REVIEW' AND version = ?`)
-      .bind(note, now, now, draftId, draft.version),
     db.prepare(`INSERT OR IGNORE INTO leads
       (id, name, phone, email, message, source, status, ai_score, score,
        followup_stage, created_at, updated_at)
       SELECT lead_id, name, phone, email, message, source, 'new', 0, 0,
              0, created_at, ?
       FROM lead_drafts
-      WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version`)
-      .bind(now, draftId),
-    db.prepare(`INSERT OR IGNORE INTO sales_pipeline
+      WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version
+        AND (expires_at IS NULL OR expires_at = 0 OR expires_at > ?)`)
+      .bind(now, draftId, now),
+    db.prepare(`INSERT INTO sales_pipeline
       (id, lead_id, stage, deal_value, currency, probability, notes, created_at, updated_at)
       SELECT ?, d.lead_id, 'new', 0, 'USD', 0, '', ?, ?
-      FROM lead_drafts d JOIN leads l ON l.id = d.lead_id
-      WHERE d.id = ? AND d.status = 'APPROVED' AND d.reviewed_version = d.version`)
+      FROM lead_drafts d
+      JOIN leads l ON l.id = d.lead_id
+      WHERE d.id = ? AND d.status = 'APPROVED' AND d.reviewed_version = d.version
+        AND l.name = d.name AND l.phone = d.phone
+        AND COALESCE(l.email, '') = COALESCE(d.email, '')
+        AND COALESCE(l.message, '') = COALESCE(d.message, '')
+        AND COALESCE(l.source, '') = COALESCE(d.source, '')
+        AND NOT EXISTS (SELECT 1 FROM sales_pipeline p WHERE p.lead_id = d.lead_id)`)
       .bind(makeId(), now, now, draftId),
     db.prepare(`UPDATE lead_drafts
       SET status = 'CRM_REGISTERED', registered_at = ?, updated_at = ?
       WHERE id = ? AND status = 'APPROVED' AND reviewed_version = version
-        AND EXISTS (SELECT 1 FROM leads WHERE leads.id = lead_drafts.lead_id)
-        AND EXISTS (SELECT 1 FROM sales_pipeline WHERE sales_pipeline.lead_id = lead_drafts.lead_id)`)
-      .bind(now, now, draftId)
+        AND (expires_at IS NULL OR expires_at = 0 OR expires_at > ?)
+        AND EXISTS (
+          SELECT 1 FROM leads l
+          WHERE l.id = lead_drafts.lead_id
+            AND l.name = lead_drafts.name AND l.phone = lead_drafts.phone
+            AND COALESCE(l.email, '') = COALESCE(lead_drafts.email, '')
+            AND COALESCE(l.message, '') = COALESCE(lead_drafts.message, '')
+            AND COALESCE(l.source, '') = COALESCE(lead_drafts.source, '')
+        )
+        AND (SELECT COUNT(*) FROM sales_pipeline p WHERE p.lead_id = lead_drafts.lead_id) = 1`)
+      .bind(now, now, draftId, now)
   ]);
 
   const completed = await dbFirst(db,
-    "SELECT id, lead_id, status FROM lead_drafts WHERE id = ? LIMIT 1", draftId
+    `SELECT d.id, d.lead_id, d.status, l.name AS lead_name, l.phone AS lead_phone,
+            COUNT(p.id) AS pipeline_count
+     FROM lead_drafts d
+     LEFT JOIN leads l ON l.id = d.lead_id
+     LEFT JOIN sales_pipeline p ON p.lead_id = d.lead_id
+     WHERE d.id = ?
+     GROUP BY d.id, l.id`,
+    draftId
   );
-  if (!completed || completed.status !== "CRM_REGISTERED") {
-    return json({ ok: false, error: "LEAD_APPROVAL_REGISTRATION_FAILED" }, 409);
+  if (!completed || completed.status !== "CRM_REGISTERED" ||
+      completed.lead_name !== draft.name || completed.lead_phone !== draft.phone ||
+      Number(completed.pipeline_count) !== 1) {
+    return json({ ok: false, error: "LEAD_REGISTRATION_VERIFICATION_FAILED" }, 409);
   }
   return json({ ok: true, status: "CRM_REGISTERED", draft_id: draftId, lead_id: completed.lead_id });
 }
@@ -2396,7 +2610,7 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
   <h3>درخواست‌های منتظر بررسی</h3>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>نام</th><th>تلفن</th><th>منبع</th><th>تاریخ</th><th>اقدام</th></tr></thead>
+      <thead><tr><th>نام</th><th>تلفن</th><th>منبع</th><th>تاریخ</th><th>وضعیت</th><th>اقدام</th></tr></thead>
       <tbody id="drafts"></tbody>
     </table>
   </div>
@@ -2449,7 +2663,7 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
       const entered = window.prompt("دلیل رد درخواست (اختیاری):", "");
       if (entered === null) return;
       note = entered;
-    } else if (!window.confirm("درخواست تأیید و در CRM ثبت شود؟")) {
+    } else if (!window.confirm("درخواست تأیید شود؟ ثبت در CRM مرحله جداگانه است.")) {
       return;
     }
 
@@ -2458,6 +2672,20 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
       await request("/api/lead-drafts/" + encodeURIComponent(draftId) + "/" + decision, {
         method: "POST",
         body: JSON.stringify({ note })
+      });
+      await load();
+    } catch (error) {
+      $("status").textContent = error.message;
+    }
+  }
+
+  async function registerDraft(draftId) {
+    if (!window.confirm("اطلاعات تأییدشده بررسی شده است. اکنون در CRM ثبت شود؟")) return;
+    $("status").textContent = "در حال ثبت نهایی در CRM...";
+    try {
+      await request("/api/lead-drafts/" + encodeURIComponent(draftId) + "/register", {
+        method: "POST",
+        body: JSON.stringify({})
       });
       await load();
     } catch (error) {
@@ -2474,10 +2702,11 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     $("status").textContent = "در حال دریافت اطلاعات...";
 
     try {
-      const [statsData, leadsData, draftsData] = await Promise.all([
+      const [statsData, leadsData, pendingDraftsData, approvedDraftsData] = await Promise.all([
         request("/api/stats"),
         request("/api/leads?limit=100"),
-        request("/api/lead-drafts?status=PENDING_REVIEW")
+        request("/api/lead-drafts?status=PENDING_REVIEW"),
+        request("/api/lead-drafts?status=APPROVED")
       ]);
 
       const stats = statsData.stats || {};
@@ -2522,24 +2751,36 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
 
       const draftsBody = $("drafts");
       draftsBody.replaceChildren();
-      for (const draft of (draftsData.drafts || [])) {
+      const drafts = [
+        ...(pendingDraftsData.drafts || []),
+        ...(approvedDraftsData.drafts || [])
+      ];
+      for (const draft of drafts) {
         const tr = document.createElement("tr");
-        for (const value of [draft.name, draft.phone, draft.source, draft.created_at]) {
+        for (const value of [draft.name, draft.phone, draft.source, draft.created_at, draft.status]) {
           const td = document.createElement("td");
           td.textContent = value == null ? "" : String(value);
           tr.appendChild(td);
         }
         const actions = document.createElement("td");
-        const approve = document.createElement("button");
-        approve.type = "button";
-        approve.textContent = "تأیید و ثبت در CRM";
-        approve.addEventListener("click", () => reviewDraft(draft.id, "approve"));
-        const reject = document.createElement("button");
-        reject.type = "button";
-        reject.textContent = "رد درخواست";
-        reject.style.marginInlineStart = "8px";
-        reject.addEventListener("click", () => reviewDraft(draft.id, "reject"));
-        actions.append(approve, reject);
+        if (draft.status === "PENDING_REVIEW") {
+          const approve = document.createElement("button");
+          approve.type = "button";
+          approve.textContent = "تأیید بررسی";
+          approve.addEventListener("click", () => reviewDraft(draft.id, "approve"));
+          const reject = document.createElement("button");
+          reject.type = "button";
+          reject.textContent = "رد درخواست";
+          reject.style.marginInlineStart = "8px";
+          reject.addEventListener("click", () => reviewDraft(draft.id, "reject"));
+          actions.append(approve, reject);
+        } else if (draft.status === "APPROVED") {
+          const register = document.createElement("button");
+          register.type = "button";
+          register.textContent = "ثبت در CRM";
+          register.addEventListener("click", () => registerDraft(draft.id));
+          actions.append(register);
+        }
         tr.appendChild(actions);
         draftsBody.appendChild(tr);
       }
@@ -2726,13 +2967,26 @@ if (
     return handleLead(request, env);
   }
 
+  if (path === "/api/lead-drafts" && method === "POST") {
+    return handleOwnerLeadDraftCreate(request, env);
+  }
+
   if (path === "/api/lead-drafts") {
     return handleLeadDrafts(request, env);
   }
 
-  const leadDraftReviewMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})\/(approve|reject)$/i);
+  const ownerDraftMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})(?:\/(submit|cancel))?$/i);
+  if (ownerDraftMatch) {
+    return handleOwnerLeadDraft(request, env, ownerDraftMatch[1],
+      (ownerDraftMatch[2] || "").toLowerCase() || null);
+  }
+
+  const leadDraftReviewMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})\/(approve|reject|register)$/i);
   if (leadDraftReviewMatch) {
-    return handleLeadDraftReview(request, env, leadDraftReviewMatch[1], leadDraftReviewMatch[2].toLowerCase());
+    const draftId = leadDraftReviewMatch[1];
+    const action = leadDraftReviewMatch[2].toLowerCase();
+    if (action === "register") return handleLeadDraftRegister(request, env, draftId);
+    return handleLeadDraftReview(request, env, draftId, action);
   }
 
   if (path === "/api/leads") {

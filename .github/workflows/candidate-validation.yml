@@ -35,8 +35,11 @@ jobs:
           assert binding.get("binding") == "DB", "D1 binding must be named DB"
           assert binding.get("database_name") == "2020khoda-crm", "unexpected D1 database name"
           assert binding.get("database_id") == "25e5ebc9-4809-4028-ab26-349ba359c53f", "unexpected D1 database ID"
-          assert "preview_database_id" not in binding, "preview must not point at production D1"
-          print("PASS: Wrangler D1 binding matches the audited target; preview is isolated.")
+          previews = config.get("previews")
+          assert isinstance(previews, dict), "Wrangler previews block is required"
+          preview_bindings = previews.get("d1_databases", [])
+          assert all(item.get("database_id") != binding.get("database_id") for item in preview_bindings), "preview must never point at production D1"
+          print("PASS: production D1 binding matches the audited target; preview block is present and does not reuse Production D1.")
           PY
       - name: Check Worker syntax
         run: npm run check
