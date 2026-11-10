@@ -2391,6 +2391,17 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     </table>
   </div>
 </div>
+
+<div class="panel">
+  <h3>درخواست‌های منتظر بررسی</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>نام</th><th>تلفن</th><th>منبع</th><th>تاریخ</th><th>اقدام</th></tr></thead>
+      <tbody id="drafts"></tbody>
+    </table>
+  </div>
+  <p class="muted">ثبت در CRM فقط پس از تأیید مدیر انجام می‌شود.</p>
+</div>
 </div>
 
 <script>
@@ -2398,9 +2409,14 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
   const $ = (id) => document.getElementById(id);
   let token = "";
 
-  async function request(path) {
+  async function request(path, options = {}) {
     const response = await fetch(path, {
-      headers: { "X-Admin-Token": token },
+      ...options,
+      headers: {
+        "X-Admin-Token": token,
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      },
       cache: "no-store"
     });
 
@@ -2427,6 +2443,28 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     return box;
   }
 
+  async function reviewDraft(draftId, decision) {
+    let note = "";
+    if (decision === "reject") {
+      const entered = window.prompt("دلیل رد درخواست (اختیاری):", "");
+      if (entered === null) return;
+      note = entered;
+    } else if (!window.confirm("درخواست تأیید و در CRM ثبت شود؟")) {
+      return;
+    }
+
+    $("status").textContent = "در حال ثبت تصمیم...";
+    try {
+      await request(`/api/lead-drafts/${encodeURIComponent(draftId)}/${decision}`, {
+        method: "POST",
+        body: JSON.stringify({ note })
+      });
+      await load();
+    } catch (error) {
+      $("status").textContent = error.message;
+    }
+  }
+
   async function load() {
     if (!token) {
       $("status").textContent = "ابتدا توکن مدیریت را وارد کنید.";
@@ -2436,9 +2474,10 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
     $("status").textContent = "در حال دریافت اطلاعات...";
 
     try {
-      const [statsData, leadsData] = await Promise.all([
+      const [statsData, leadsData, draftsData] = await Promise.all([
         request("/api/stats"),
-        request("/api/leads?limit=100")
+        request("/api/leads?limit=100"),
+        request("/api/lead-drafts?status=PENDING_REVIEW")
       ]);
 
       const stats = statsData.stats || {};
@@ -2479,6 +2518,30 @@ td,th{padding:10px;border-bottom:1px solid #39332a;text-align:right}
         }
 
         body.appendChild(tr);
+      }
+
+      const draftsBody = $("drafts");
+      draftsBody.replaceChildren();
+      for (const draft of (draftsData.drafts || [])) {
+        const tr = document.createElement("tr");
+        for (const value of [draft.name, draft.phone, draft.source, draft.created_at]) {
+          const td = document.createElement("td");
+          td.textContent = value == null ? "" : String(value);
+          tr.appendChild(td);
+        }
+        const actions = document.createElement("td");
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.textContent = "تأیید و ثبت در CRM";
+        approve.addEventListener("click", () => reviewDraft(draft.id, "approve"));
+        const reject = document.createElement("button");
+        reject.type = "button";
+        reject.textContent = "رد درخواست";
+        reject.style.marginInlineStart = "8px";
+        reject.addEventListener("click", () => reviewDraft(draft.id, "reject"));
+        actions.append(approve, reject);
+        tr.appendChild(actions);
+        draftsBody.appendChild(tr);
       }
 
       $("status").textContent = "اطلاعات با موفقیت دریافت شد.";
