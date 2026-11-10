@@ -8,6 +8,7 @@ package = json.loads((root / "package.json").read_text(encoding="utf-8"))
 
 assert config.get("name") == "2020khoda-global-ai-core"
 assert config.get("main") == "src/index.js"
+assert config.get("ai", {}).get("binding") == "AI", "Production AI binding must match env.AI"
 assert config.get("previews", {}).get("ai", {}).get("binding") == "AI"
 assert "d1_databases" not in config.get("previews", {}), "Preview must not bind Production D1"
 prod_d1 = config.get("d1_databases", [])
