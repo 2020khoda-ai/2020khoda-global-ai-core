@@ -2981,7 +2981,7 @@ if (
       (ownerDraftMatch[2] || "").toLowerCase() || null);
   }
 
-  const leadDraftReviewMatch = path.match(/^\\/api\\/lead-drafts\\/([0-9a-f-]{36})\\/(approve|reject|register)$/i);
+  const leadDraftReviewMatch = path.match(/^\/api\/lead-drafts\/([0-9a-f-]{36})\/(approve|reject|register)$/i);
   if (leadDraftReviewMatch) {
     const draftId = leadDraftReviewMatch[1];
     const action = leadDraftReviewMatch[2].toLowerCase();
