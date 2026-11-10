@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "node --check src/index.js",
-    "test": "node tests/worker-smoke.test.mjs && node tests/lead-draft-owner-contract.test.mjs && python3 tests/d1_schema_compatibility.test.py && python3 tests/lead-draft-owner-migration.test.py && python3 tests/wrangler-preview-config.test.py"
+    "test": "node tests/worker-smoke.test.mjs && node tests/lead-draft-owner-contract.test.mjs && python3 tests/d1_schema_compatibility.test.py && python3 tests/lead-draft-owner-migration.test.py && python3 tests/wrangler-preview-config.test.py && python3 tests/wrangler-local-config.test.py"
   },
   "devDependencies": {
     "wrangler": "4.159.0"
