@@ -106,3 +106,11 @@ The change set is limited to Candidate documentation, a static documentation tes
 4. Confirm the active Production AI binding/version mismatch with a separate human-controlled release plan; do not change Worker settings or deploy during this gate.
 5. Keep Supabase disconnected unless a separate data-plane decision and isolated least-privilege tests approve its future use.
 6. Prepare a single Release Candidate SHA, reproducible CI evidence, change list, residual-risk register, and rollback procedure for human GO/NO-GO review.
+
+
+## Candidate CI evidence added after this snapshot
+
+- PR #16 run #101, run ID `42972418564`, completed successfully on head `406d4f02bce4ead59447a0a8f43db10e928bb0e0` at 2026-11-11 06:26 UTC.
+- Job `Syntax and smoke tests (no deployment)` completed with `success`. Steps passed: Wrangler production/Preview isolation assertions, Worker syntax check, and `npm test`.
+- Job logs explicitly show the new `supabase-matrix-contract.test.mjs` passing, alongside the existing smoke, owner-contract, synthetic D1 schema/migration, Preview config, and local config tests.
+- This is Candidate CI evidence only. It does not prove live Supabase authorization, live D1 integration, Worker runtime AI inference, browser E2E, or Production readiness.
