@@ -1,4 +1,4 @@
-name = "2020khoda-global-ai-core"
+name = "2020khoda-root-candidate"
 main = "src/index.js"
 compatibility_date = "2026-11-05"
 
