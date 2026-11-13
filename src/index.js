@@ -2735,11 +2735,22 @@ async function handleLeadUpdate(request, env, leadId) {
 export default {
   async fetch(request, env, ctx) {
     try {
-      if (!env.DB) {
+      const url = new URL(request.url);
+      const path = url.pathname;
+      const method = request.method.toUpperCase();
+
+      // Public shell and health endpoints must remain reachable without D1.
+      // Data-backed APIs continue through the normal DB requirement.
+      const isPublicShell =
+        method === "GET" &&
+        (path === "/" || path === "/account" || path === "/dashboard" ||
+         path === "/health" || path === "/api/health");
+
+      if (!env.DB && !isPublicShell) {
         return json({
           ok: false,
           error: "DATABASE_NOT_BOUND",
-          message: "D1 binding named DB is required."
+          message: "D1 binding named DB is required for data-backed services."
         }, 503);
       }
 
