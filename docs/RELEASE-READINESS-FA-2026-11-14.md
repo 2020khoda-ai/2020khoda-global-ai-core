@@ -3,85 +3,79 @@
 **تاریخ ممیزی:** 2026-11-14  
 **شاخه:** `candidate/release-readiness-2026-11-14`  
 **پایه:** `main` در commit `89bfd177e12db39dfcc52fcbd91a969757956f75`  
-**وضعیت:** Candidate فقط؛ انتشار Production مجاز/انجام‌شده نیست.
+**وضعیت:** Candidate فقط؛ انتشار Production انجام نشده است.
 
-## 1) دامنه و روش
+## 1) دامنه
 
-ممیزی به‌صورت READ-ONLY روی مخزن GitHub و منابع Cloudflare انجام شد. هیچ Worker، Route، DNS، Secret، D1 schema یا Production deployment تغییر نکرد.
-
-مخزن بررسی‌شده:
-- `2020khoda-ai/2020khoda-global-ai-core`
-- شاخه اصلی: `main`
-- فایل ورودی مخزن: `src/index.js`
-- نسخه اعلام‌شده در کد: `3.1.0`
+بررسی READ-ONLY مخزن GitHub، فایل ورودی Worker و متادیتای Cloudflare انجام شد. این PR فقط گزارش مستنداتی اضافه می‌کند؛ هیچ منطق اجرایی یا تنظیمات عملیاتی تغییر نکرده است.
 
 ## 2) شواهد Cloudflare
 
-Workerهای موجود در حساب:
-- `2020khoda-ai-brain-candidate` — برچسب‌های `candidate` و `isolated`
+Workerهای قابل مشاهده:
+- `2020khoda-ai-brain-candidate`
 - `2020khoda-root-candidate`
-- `2020khoda-global-ai-core` — دارای Routeهای موجود `crm.2020khoda.com/*` و `www.2020khoda.com`
+- `2020khoda-global-ai-core` با Routeهای موجود `crm.2020khoda.com/*` و `www.2020khoda.com`
 
-**Worker تولیدی، Routeهای موجود و تنظیمات آن‌ها دست‌نخورده باقی ماندند.**
-
-تنظیمات Worker با نام `2020khoda-ai-brain-candidate` نشان می‌دهد:
-- Binding به نام `DB` به D1 با شناسه `9f6edc45-7915-4ee9-88b9-51cdd2007ae0` متصل است.
-- Binding به نام `AI` موجود است.
-- تاریخ سازگاری `2026-11-05` است.
+برای Worker با نام `2020khoda-ai-brain-candidate`:
+- Binding با نام `DB` به D1 با شناسه `9f6edc45-7915-4ee9-88b9-51cdd2007ae0` متصل است.
+- Binding با نام `AI` وجود دارد.
+- Compatibility date برابر `2026-11-05` است.
 - Observability و Logs فعال‌اند؛ Traces غیرفعال‌اند.
-- در فهرست Worker مقدار `deployment_id` خالی گزارش شده است؛ بنابراین این ممیزی ادعای انتشار نسخه جدید نمی‌کند.
+- در پاسخ فهرست Worker مقدار deployment_id خالی بود؛ از این رو این بررسی انتشار نسخه جدید را اثبات نمی‌کند.
 
-D1 با نام `2020khoda-ai-brain-candidate` در منطقه EU قرار دارد. Query فقط‌خواندنی `sqlite_master` وجود 9 جدول کاربردی/داخلی را نشان داد و Query جدول `ai_schema_migrations` نسخه `001` را تأیید کرد. مقدار `num_tables` در پاسخ فهرست دیتابیس صفر بود، اما Query مستقیم 9 جدول را نشان داد؛ این اختلاف متادیتا باید جداگانه بررسی شود.
+D1 با نام `2020khoda-ai-brain-candidate` در منطقه EU قرار دارد. Query فقط‌خواندنی `sqlite_master` وجود 9 جدول را نشان داد و جدول `ai_schema_migrations` نسخه `001` را ثبت کرده است. پاسخ متادیتای فهرست D1 مقدار num_tables=0 نشان می‌داد که با Query مستقیم ناسازگار است؛ این اختلاف باید بررسی شود.
 
-## 3) اختلاف مهم بین مخزن GitHub و Worker Candidate
+## 3) دو منبع کد متفاوت — نکته اصلی
 
-کد `src/index.js` در GitHub (نسخه 3.1.0) با کد Worker در Cloudflare به نام `2020khoda-ai-brain-candidate` یکسان نیست.
+مخزن GitHub و Worker بارگذاری‌شده در Cloudflare دو artifact متفاوت‌اند و نباید یک نسخه فرض شوند.
 
-Worker Cloudflare فعلی فقط مسیرهای زیر را در کد مشاهده‌شده دارد:
-- `GET /health`
-- `POST /api/chat`
-- `POST /api/memory`
-- `GET /api/memory`
+### GitHub: `src/index.js` نسخه 3.1.0
+در نسخه موجود مخزن:
+- `handleMemory` ابتدا `requireUser` را اجرا می‌کند.
+- Queryهای حافظه با `user.id` محدود شده‌اند.
+- ارجاع `source_session_id` با `getOwnedChat` برای همان کاربر کنترل می‌شود.
+- `handleChat` نیز `requireUser` را اجرا می‌کند.
+- برای Chat محدودیت نرخ با کلید شناسه کاربر اعمال می‌شود.
+- شناسه گفتگوی ارائه‌شده با `getOwnedChat` به مالکیت کاربر مقید می‌شود.
 
-در حالی که فایل GitHub شامل Router گسترده‌تری برای حساب کاربری، CRM، Lead، داشبورد، پیگیری و مسیرهای دیگر است. این دو کد نباید بدون تطبیق و آزمون، یک نسخه واحد فرض شوند.
+بنابراین ادعای قبلی مبنی بر اینکه کد GitHub در مسیرهای Memory و Chat هیچ احراز هویت یا کنترل مالکیتی ندارد، دقیق نبود و در این نسخه اصلاح می‌شود.
 
-## 4) یافته‌های امنیتی و عملکردی مسدودکننده
+### Cloudflare: Worker با نام `2020khoda-ai-brain-candidate`
+کد Worker مشاهده‌شده در Cloudflare با فایل `src/index.js` مخزن همسان نیست و Router محدودتری دارد. بررسی قبلی روی این artifact مسیرهای `/health`، `/api/chat` و `/api/memory` را نشان داده بود. یافته‌های امنیتی مربوط به این Worker کوچک‌تر را نباید به کد GitHub نسبت داد.
 
-### بحرانی برای هرگونه ارائه عمومی Candidate
-- مسیر `POST /api/memory` در کد Worker Candidate احراز هویت یا مالکیت `subjectId` را بررسی نمی‌کند؛ در نتیجه امکان ثبت/به‌روزرسانی حافظه با شناسه دلخواه وجود دارد.
-- مسیر `GET /api/memory` نیز احراز هویت/مالکیت `subjectId` را بررسی نمی‌کند؛ این مسیر می‌تواند اطلاعات حافظه را در صورت دانستن شناسه افشا کند.
-- مسیر `POST /api/chat` مقدار `userId` و `sessionId` را از ورودی کاربر می‌پذیرد و هویت نشست را احراز نمی‌کند؛ جداسازی هویت و مالکیت نشست اثبات نشده است.
-- برای این مسیرها Rate Limit و Origin/CSRF guard در کد مشاهده‌شده وجود ندارد.
+**مانع انتشار:** تا زمانی که نسخه منبع حقیقت انتخاب و artifact نهایی دقیقاً با Worker Candidate تطبیق داده نشود، نمی‌توان امنیت یا قابلیت‌های نسخه GitHub را به Worker مستقرشده نسبت داد.
 
-### نیازمند بررسی بیشتر در مخزن GitHub
-- منطق admin با `X-Admin-Token` و حفاظت لایه پلتفرم باید بازبینی شود.
-- فرضیات `CF-Connecting-IP` و رفتار fallback باید تست شوند.
-- مسیرهای عمومی Lead و Chat باید در برابر سوءاستفاده، replay و درخواست‌های cross-origin ارزیابی شوند.
-- تست فعلی فقط پاسخ مورد انتظار هنگام نبودن D1 را بررسی می‌کند؛ تست آن، سازگاری schema، Auth، AI یا End-to-End را اثبات نمی‌کند.
+## 4) وضعیت Build و Preview در PR #22
 
-## 5) تصمیم انتشار
+پس از ایجاد PR، GitHub/Cloudflare به‌صورت خودکار چند بررسی Preview اجرا کردند:
+- Cloudflare Pages برای پروژه `2020khoda-ai`: Preview موفق گزارش شده است.
+- Build مربوط به Worker با نام `2020khoda-global-ai-core`: ناموفق گزارش شده است.
+- Build مربوط به Cloudflare Pages پروژه `2020khoda-crm`: ناموفق گزارش شده است.
 
-**NO-GO برای Production و هرگونه اتصال عمومی/دامنه اصلی.**
+این وضعیت‌ها مربوط به Preview/CI هستند و نه انتشار Production. لاگ‌های دقیق خطای Build هنوز بررسی نشده‌اند؛ بنابراین علت شکست اعلام نمی‌شود.
 
-این تصمیم به معنی شکست پروژه نیست؛ یعنی هنوز شواهد امنیت و یکپارچگی کافی برای انتشار وجود ندارد.
+## 5) موانع انتشار
 
-## 6) اقدامات لازم برای Release Candidate بعدی
+1. تعیین منبع حقیقت: انتخاب فایل اجرایی واحد و تطبیق آن با Worker Candidate.
+2. بررسی علت شکست Build مربوط به Worker و پروژه CRM از روی لاگ‌های دقیق.
+3. آزمون یکپارچه Auth، Memory، Chat و مالکیت داده در محیط ایزوله با کاربرهای آزمایشی.
+4. بررسی Origin/CSRF و Rate Limit در مسیرهای عمومی و مدیریتی.
+5. اعتبارسنجی Migrationها و سازگاری schema واقعی D1 با Queryهای نسخه انتخابی.
+6. افزودن تست‌های integration برای موفقیت و رد دسترسی غیرمجاز؛ تست فعلی فقط حالت نبودن D1 را بررسی می‌کند.
+7. اجرای Regression، بازبینی لاگ‌ها و آماده‌سازی Rollback و checksum.
 
-1. انتخاب یک منبع حقیقت واحد: تطبیق و تثبیت کد GitHub و Worker Candidate.
-2. افزودن احراز هویت واقعی و کنترل مالکیت برای Memory و Session؛ عدم اعتماد به `userId` یا `subjectId` ارسالی از کلاینت.
-3. افزودن Origin/CSRF protection، Rate Limit، محدودیت اندازه ورودی و پاسخ‌های خطای امن.
-4. تعریف Migrationهای نسخه‌بندی‌شده و بررسی سازگاری همه Queryها با D1 واقعی.
-5. افزودن تست‌های واحد و integration برای Chat، Memory، Session، Auth و Lead؛ بدون استفاده از داده واقعی مشتری.
-6. اجرای تست‌های ایزوله و بررسی لاگ‌ها؛ عدم ثبت متن خصوصی یا Secret در Logs.
-7. ساخت بسته انتشار، checksum، راهنمای Rollback و گزارش شواهد.
-8. ارائه Release Candidate برای بازبینی و تأیید انسانی؛ Merge به `main`، تغییر Route/DNS، اتصال Production و Deploy فقط پس از تأیید جداگانه.
+## 6) تصمیم انتشار
+
+**NO-GO برای Production در وضعیت فعلی.**
+
+دلیل: اختلاف artifactها و Buildهای ناموفق Preview حل‌نشده‌اند و آزمون End-to-End/امنیتی کافی ثبت نشده است.
 
 ## 7) حفاظت از دارایی‌ها
 
-- شاخه `main` و فایل‌های اصلی تغییر نکرده‌اند.
-- هیچ migration یا query تغییردهنده اجرا نشده است.
-- هیچ Secret خوانده، چاپ یا تغییر داده نشده است.
-- هیچ پیام یا عملیات CRM روی مشتری واقعی انجام نشده است.
-- هیچ Deploy یا تغییر Production انجام نشده است.
+- `main` تغییر نکرده است.
+- Workerها، Routeها، DNS، Secrets و D1 schema تغییر نکرده‌اند.
+- هیچ داده مشتری یا عملیات CRM تغییر نکرده است.
+- هیچ Production Deploy انجام نشده است.
+- این PR مستنداتی است و شامل اصلاح کد اجرایی نیست.
 
-**نتیجه:** زیرساخت Candidate دارای Bindingهای D1 و Workers AI و Migration اولیه است، اما مسیرهای Memory و Chat هنوز برای استفاده عمومی امن و آماده انتشار اثبات نشده‌اند.
+**نتیجه:** Candidate زیرساختی دارای Bindingهای DB و AI و Migration اولیه است؛ اما برای Release Candidate اجرایی، ابتدا باید اختلاف GitHub/Cloudflare و خطاهای Build حل شوند و تست‌های امنیتی و یکپارچه‌سازی ثبت شوند.
