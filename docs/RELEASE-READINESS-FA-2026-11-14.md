@@ -45,19 +45,31 @@ D1 با نام `2020khoda-ai-brain-candidate` در منطقه EU قرار دار
 
 **مانع انتشار:** تا زمانی که نسخه منبع حقیقت انتخاب و artifact نهایی دقیقاً با Worker Candidate تطبیق داده نشود، نمی‌توان امنیت یا قابلیت‌های نسخه GitHub را به Worker مستقرشده نسبت داد.
 
-## 4) وضعیت Build و Preview در PR #22
+## 4) وضعیت Build و Preview در PR #22 — بازبینی لاگ‌ها
 
-پس از ایجاد PR، GitHub/Cloudflare به‌صورت خودکار چند بررسی Preview اجرا کردند:
-- Cloudflare Pages برای پروژه `2020khoda-ai`: Preview موفق گزارش شده است.
-- Build مربوط به Worker با نام `2020khoda-global-ai-core`: ناموفق گزارش شده است.
-- Build مربوط به Cloudflare Pages پروژه `2020khoda-crm`: ناموفق گزارش شده است.
+### Cloudflare Pages: `2020khoda-ai`
+- آخرین Preview در commit `de82ad00cc20dfd7f0860d626947b1ebd70c7b8b` در 2026-11-14 با وضعیت موفق منتشر شده است.
+- مراحل queued، initialize، clone_repo، build و deploy همگی `success` هستند.
+- این Preview فقط Gateway استاتیک است و `uses_functions=false`؛ بنابراین موفقیت آن، اجرای Worker یا CRM را اثبات نمی‌کند.
 
-این وضعیت‌ها مربوط به Preview/CI هستند و نه انتشار Production. لاگ‌های دقیق خطای Build هنوز بررسی نشده‌اند؛ بنابراین علت شکست اعلام نمی‌شود.
+### Cloudflare Pages: `2020khoda-crm`
+- آخرین Preview با شناسه `736097f9-858b-4361-b0a5-cc64d924fab4` در مرحله build شکست خورده است؛ مرحله deploy آغاز نشده است.
+- لاگ مستقیم Cloudflare علت را تأیید می‌کند: فایل `wrangler.toml` به‌عنوان پیکربندی Pages نامعتبر تشخیص داده شده، چون `pages_build_output_dir` ندارد؛ سپس Cloudflare به تنظیمات پروژه برگشته و متن کامل دستورالعمل 2020KHODA را به‌عنوان فرمان Shell اجرا کرده است.
+- Shell خطای `/bin/sh: 1: 2020KHODA.ai®: not found` و کد خروج `127` ثبت کرده است.
+- تنظیمات فعلی پروژه نیز `build_command` را برابر همان متن طولانی و `destination_dir` را `2020khoda.ai` نشان می‌دهد. در شاخه Candidate فایل `2020khoda.ai/index.html` وجود ندارد و `package.json` فقط اسکریپت‌های `check` و `test` دارد؛ بنابراین تعیین مسیر خروجی صحیح نیازمند تصمیم معماری است، نه صرفاً پاک‌کردن فرمان اشتباه.
+- این پروژه دامنه‌های `2020khoda.com` و `www.2020khoda.com` را در پیکربندی خود فهرست می‌کند؛ این ممیزی هیچ تغییری در دامنه یا Deployment تولیدی نداده است.
+
+### Cloudflare Workers Builds
+- آخرین Build قابل مشاهده برای Worker `2020khoda-global-ai-core` در 2026-11-07 روی شاخه `main` و commit پایه `89bfd177e12db39dfcc52fcbd91a969757956f75` با نتیجه `success` ثبت شده است.
+- Build ناموفق تاریخی با نتیجه `fail` مربوط به 2026-10-14، مخزن قدیمی `2020khda.ai` و فرمان متنی نامرتبط در مسیر `/2020khoda.ai` است؛ این رویداد مربوط به PR فعلی یا commit Candidate نیست.
+- برای commit فعلی PR، Build جدید Worker در فهرست Buildها ثبت نشده است؛ Trigger موجود فقط شاخه `main` را شامل می‌شود. برای Worker `2020khoda-ai-brain-candidate` نیز رکوردی در Cloudflare Workers Builds موجود نیست. بنابراین نسبت‌دادن یک شکست Build جاری به Worker Candidate با شواهد فعلی تأیید نمی‌شود.
+
+همه موارد بالا Preview/CI هستند و به‌معنای انتشار Production نیستند.
 
 ## 5) موانع انتشار
 
 1. تعیین منبع حقیقت: انتخاب فایل اجرایی واحد و تطبیق آن با Worker Candidate.
-2. بررسی علت شکست Build مربوط به Worker و پروژه CRM از روی لاگ‌های دقیق.
+2. رفع تنظیم نادرست Build پروژه CRM در یک محیط Candidate مستقل و تعیین Output Directory واقعی؛ سپس افزودن Trigger/Build قابل‌ردیابی برای شاخه Candidate Worker، بدون تغییر Trigger تولیدی.
 3. آزمون یکپارچه Auth، Memory، Chat و مالکیت داده در محیط ایزوله با کاربرهای آزمایشی.
 4. بررسی Origin/CSRF و Rate Limit در مسیرهای عمومی و مدیریتی.
 5. اعتبارسنجی Migrationها و سازگاری schema واقعی D1 با Queryهای نسخه انتخابی.
@@ -68,7 +80,7 @@ D1 با نام `2020khoda-ai-brain-candidate` در منطقه EU قرار دار
 
 **NO-GO برای Production در وضعیت فعلی.**
 
-دلیل: اختلاف artifactها و Buildهای ناموفق Preview حل‌نشده‌اند و آزمون End-to-End/امنیتی کافی ثبت نشده است.
+دلیل: Build پروژه CRM همچنان شکست می‌خورد؛ نسخه GitHub با Worker مستقرشده هنوز تطبیق داده نشده؛ برای commit فعلی Candidate تست Build Worker وجود ندارد؛ و آزمون End-to-End/امنیتی کافی ثبت نشده است.
 
 ## 7) حفاظت از دارایی‌ها
 
