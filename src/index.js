@@ -1,3 +1,5 @@
+import { isSameOriginBrowserRequest, isUserSessionPath } from "./security/origin.js";
+
 /* =========================================================
    2020KHODA® GLOBAL AI CORE
    Rebuild Edition — Part 1
@@ -289,19 +291,7 @@ function clearSessionCookie() {  return [
    REQUEST ORIGIN VALIDATION
 ------------------------- */
 
-function isAllowedOrigin(request) {
-  const origin = request.headers.get("Origin");
 
-  if (!origin) return true;
-
-  const requestURL = new URL(request.url);
-
-  try {
-    return new URL(origin).origin === requestURL.origin;
-  } catch {
-    return false;
-  }
-}
 
 /* -------------------------
    RATE LIMITING
@@ -738,7 +728,7 @@ async function handleAuth(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  if (!isAllowedOrigin(request)) {
+  if (!isSameOriginBrowserRequest(request)) {
     return errorResponse("FORBIDDEN", 403);
   }
 
@@ -2723,17 +2713,7 @@ function clearGuestCookie() {
   return `${GUEST_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
 }
 function guestOriginAllowed(request) {
-  const origin = request.headers.get("Origin");
-  if (origin) {
-    try {
-      return new URL(origin).origin === new URL(request.url).origin;
-    } catch {
-      return false;    }
-  }
-
-  // Same-origin GET fetches may omit Origin. Accept only an explicit
-  // browser same-origin fetch signal when Origin is absent.
-  return request.headers.get("Sec-Fetch-Site") === "same-origin";
+  return isSameOriginBrowserRequest(request);
 }
 async function getOrCreateGuest(request, env) {
   const db = requireDB(env);
@@ -2812,15 +2792,32 @@ async function routeRequest(request, env) {
   const method = request.method.toUpperCase();
 
   if (method === "OPTIONS") {
+    if (!isSameOriginBrowserRequest(request)) {
+      return errorResponse("FORBIDDEN", 403);
+    }
+
+    const origin = request.headers.get("Origin");
+    const corsHeaders = origin
+      ? {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true"
+        }
+      : {};
+
     return new Response(null, {
       status: 204,
       headers: {
+        ...corsHeaders,
         "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Admin-Token",
         "Access-Control-Max-Age": "86400",
         "Vary": "Origin"
       }
     });
+  }
+
+  if (isUserSessionPath(path) && !isSameOriginBrowserRequest(request)) {
+    return errorResponse("FORBIDDEN", 403);
   }
 
   if (method === "GET" && path === "/") {
