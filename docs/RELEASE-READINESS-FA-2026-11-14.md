@@ -79,3 +79,25 @@ D1 با نام `2020khoda-ai-brain-candidate` در منطقه EU قرار دار
 - این PR مستنداتی است و شامل اصلاح کد اجرایی نیست.
 
 **نتیجه:** Candidate زیرساختی دارای Bindingهای DB و AI و Migration اولیه است؛ اما برای Release Candidate اجرایی، ابتدا باید اختلاف GitHub/Cloudflare و خطاهای Build حل شوند و تست‌های امنیتی و یکپارچه‌سازی ثبت شوند.
+
+
+## 8) اصلاح خطای 404 در Pages Preview — 2026-11-14
+
+### علت تأییدشده
+- پروژه Pages به ریشه مخزن متصل است و Build command / Output directory تعریف نشده است.
+- لاگ Deployment با شناسه `4c3a974a-b0d9-4874-beef-a172f41aa39c` نشان داد فایل `wrangler.toml` پیکربندی معتبر Pages نیست و مرحله Build رد شده است.
+- در فهرست فایل‌های منتشرشده آن Deployment، `/index.html` وجود نداشت؛ بنابراین ریشه Preview سند ورودی نداشت.
+- این مخزن اساساً Worker محور است؛ رابط‌های HTML داخل `src/index.js` از طریق Worker route می‌شوند و Pages بدون Functions، Worker را اجرا نمی‌کند.
+
+### اصلاح Candidate
+- فایل مستقل `/index.html` به شاخه Candidate اضافه شد تا ریشه Pages دیگر 404 ناشی از نبودن ورودی نداشته باشد.
+- صفحه جدید صریحاً «Candidate Preview Gateway» است و اعلام می‌کند به D1، CRM و Workers AI متصل نیست؛ هیچ قابلیت عملیاتی یا اتصال ساختگی نمایش نمی‌دهد.
+- Commit اصلاح: `1ea11650966ef08634d45d31b7db8f4b4762a492`.
+- Cloudflare Pages Preview deployment: `73900452-63fd-4014-9b40-d8cd1ea1d370`.
+- شواهد API Cloudflare: مراحل queued، initialize، clone_repo، build و deploy همگی `success`؛ فایل `/index.html` در فهرست Deployment ثبت شده است.
+- URL تخصیص‌یافته برای Preview: `https://candidate-release-readiness-d6z2.2020khoda-ai.pages.dev`.
+
+### محدوده و محدودیت
+این اصلاح فقط ورودی استاتیک Pages Preview را ایجاد می‌کند. اپلیکیشن واقعی Worker، احراز هویت، CRM، D1 و AI هنوز از طریق این Pages Preview اجرا یا End-to-End تست نشده‌اند. برای فعال‌سازی واقعی باید معماری Pages Functions یا Worker route به‌صورت جداگانه طراحی و در محیط Candidate با Bindingهای آزمایشی بررسی شود.
+
+**Production همچنان NO-GO است؛ هیچ Production، DNS، Worker route، Secret یا D1 تغییری نکرده است.**
